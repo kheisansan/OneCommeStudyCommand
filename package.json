@@ -1,0 +1,24 @@
+{
+  "name": "onecomme-study-command-plugin",
+  "version": "0.0.0-dev",
+  "description": "OneComme plugin that adds education dictionary commands.",
+  "private": true,
+  "license": "MIT",
+  "author": "タンチャオ (@tangchao_games)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TangChao-games/OneCommeStudyCommand.git"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "release:dev": "node scripts/create-release.mjs dev",
+    "release:prod": "node scripts/create-release.mjs prod",
+    "test": "npm run build && node --test dist/**/*.test.js scripts/**/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.8.0"
+  }
+}

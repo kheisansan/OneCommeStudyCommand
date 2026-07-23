@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>教育辞書プラグイン</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div>
+          <h1>教育辞書プラグイン</h1>
+          <p id="status" class="status">読み込み中</p>
+        </div>
+        <button id="reloadButton" type="button">更新</button>
+      </header>
+
+      <section class="settings" aria-label="設定">
+        <label class="toggle">
+          <input id="educationCommandEnabled" type="checkbox">
+          <span>教育コマンド</span>
+        </label>
+        <label class="toggle">
+          <input id="forgetCommandEnabled" type="checkbox">
+          <span>忘却コマンド</span>
+        </label>
+        <span id="settingsState" class="settings-state settings-state-saved">保存済み</span>
+        <button id="saveSettingsButton" class="settings-save" type="button">保存</button>
+      </section>
+
+      <section class="study-import" aria-labelledby="studyImportHeading">
+        <div class="section-header">
+          <div>
+            <h2 id="studyImportHeading">棒読みちゃん教育辞書のインポート</h2>
+            <p class="section-description">ReplaceStudy.dic の単純置換を追加します。既存の登録は変更しません。</p>
+          </div>
+        </div>
+        <div class="import-controls">
+          <label class="file-field">
+            <span>教育辞書ファイル</span>
+            <input id="studyDictionaryFile" type="file" accept=".dic">
+          </label>
+          <button id="importStudyDictionaryButton" type="button" disabled>インポート</button>
+        </div>
+        <p id="importAvailability" class="import-note">現在の辞書を読み込むまで選択できません。</p>
+        <div id="importPreview" class="import-result" hidden></div>
+        <div id="importCompletedResult" class="import-result import-result-success" hidden></div>
+      </section>
+
+      <section class="dictionary" aria-label="教育済み情報">
+        <div class="section-header">
+          <h2>教育済み情報</h2>
+          <span id="entryCount" class="entry-count">0件</span>
+        </div>
+        <form id="addEntryForm" class="entry-form">
+          <label>
+            <span>単語</span>
+            <input id="entryWord" name="word" type="text" required>
+          </label>
+          <label>
+            <span>読み</span>
+            <input id="entryReading" name="reading" type="text" required>
+          </label>
+          <button id="addEntryButton" type="submit">追加</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>単語</th>
+                <th>読み</th>
+                <th>優先度</th>
+                <th>作成者</th>
+                <th>作成日時</th>
+                <th>更新日時</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="entriesBody">
+              <tr>
+                <td colspan="7" class="empty">登録はありません</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="./study-dictionary-import.js"></script>
+    <script src="./management-state.js"></script>
+    <script src="./script.js"></script>
+  </body>
+</html>
