@@ -1,4 +1,4 @@
-const PLUGIN_UID = "com.onecomme.study-command";
+const PLUGIN_UID = "games.tang-chao.study-command";
 const API_URL = `http://localhost:11180/api/plugins/${PLUGIN_UID}`;
 const stateApi = window.ManagementState;
 const studyImportApi = window.StudyDictionaryImport;

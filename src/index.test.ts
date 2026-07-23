@@ -5,6 +5,14 @@ import { MAX_STUDY_DICTIONARY_BODY_LENGTH } from "./studyDictionaryImport";
 
 const plugin = require("./index");
 
+test("expose the owned-domain plugin identity and management URL", () => {
+  assert.equal(plugin.uid, "games.tang-chao.study-command");
+  assert.equal(
+    plugin.url,
+    "http://localhost:11180/plugins/games.tang-chao.study-command/index.html"
+  );
+});
+
 test("teach command updates speechText while keeping comment text", () => {
   const store = new MemoryStore();
   plugin.init({ dir: "", store });

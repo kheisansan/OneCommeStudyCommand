@@ -46,7 +46,7 @@ type PluginResponseLike = {
   response: unknown;
 };
 
-const PLUGIN_UID = "com.onecomme.study-command";
+const PLUGIN_UID = "games.tang-chao.study-command";
 const SETTINGS_STORE_KEY = "settings";
 const DEFAULT_SETTINGS: PluginSettings = {
   educationCommandEnabled: true,
