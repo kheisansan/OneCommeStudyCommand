@@ -63,10 +63,14 @@ export function resolveReleaseVersion({ mode, updateType, base, head, dirty, now
   return `${stableVersion}-beta.${formatUtcTimestamp(now)}.${head}${dirty ? ".dirty" : ""}`;
 }
 
+export function resolveTaggedReleaseVersion(tag) {
+  const parsed = parseStableTag(tag);
+  if (!parsed) throw new Error("Release tag must match vX.Y.Z.");
+  return `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+}
+
 export function readGitReleaseState(projectRoot) {
-  if (runGit(projectRoot, ["rev-parse", "--is-shallow-repository"]) === "true") {
-    throw new Error("Shallow Git history is not supported. Fetch complete history and tags.");
-  }
+  rejectShallowRepository(projectRoot);
 
   const tags = runGit(projectRoot, ["tag", "--merged", "HEAD", "--list"])
     .split("\n")
@@ -77,6 +81,26 @@ export function readGitReleaseState(projectRoot) {
   const commitsSinceTag = Number(runGit(projectRoot, ["rev-list", "--count", `${base.tag}..HEAD`]));
 
   return { base, head, dirty: status.length > 0, status, commitsSinceTag };
+}
+
+export function readTaggedReleaseState(projectRoot, tag) {
+  rejectShallowRepository(projectRoot);
+  const version = resolveTaggedReleaseVersion(tag);
+  const headCommit = runGit(projectRoot, ["rev-parse", "HEAD"]);
+  const tagCommit = runGit(projectRoot, ["rev-parse", "--verify", `refs/tags/${tag}^{commit}`]);
+  if (tagCommit !== headCommit) {
+    throw new Error(`Release tag ${tag} must point to HEAD.`);
+  }
+
+  const head = runGit(projectRoot, ["rev-parse", "--short=7", "HEAD"]);
+  const status = runGit(projectRoot, ["status", "--porcelain", "--untracked-files=all", "--", "."]);
+  return { tag, version, head, dirty: status.length > 0, status };
+}
+
+function rejectShallowRepository(projectRoot) {
+  if (runGit(projectRoot, ["rev-parse", "--is-shallow-repository"]) === "true") {
+    throw new Error("Shallow Git history is not supported. Fetch complete history and tags.");
+  }
 }
 
 function runGit(cwd, args) {

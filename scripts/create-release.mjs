@@ -3,7 +3,12 @@ import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { readGitReleaseState, resolveReleaseVersion } from "./release-version.mjs";
+import { formatSha256Checksum } from "./release-artifact.mjs";
+import {
+  readGitReleaseState,
+  readTaggedReleaseState,
+  resolveReleaseVersion
+} from "./release-version.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -16,33 +21,44 @@ const releaseRoot = path.join(projectRoot, "release");
 const pluginDirectoryName = "onecomme-study-command-plugin";
 
 async function main() {
-  const [mode, updateType, ...extraArgs] = process.argv.slice(2);
+  const [mode, releaseArgument, ...extraArgs] = process.argv.slice(2);
   if (extraArgs.length > 0) throw new Error("Too many release arguments.");
 
-  const gitBefore = readGitReleaseState(projectRoot);
+  const gitBefore =
+    mode === "tag"
+      ? readTaggedReleaseState(projectRoot, releaseArgument)
+      : readGitReleaseState(projectRoot);
   if (mode === "prod" && gitBefore.dirty) {
     throw new Error("Production release requires a clean project working tree.");
+  }
+  if (mode === "tag" && gitBefore.dirty) {
+    throw new Error("Tagged release requires a clean project working tree.");
   }
   if (mode === "prod" && gitBefore.commitsSinceTag === 0) {
     throw new Error(`Production release requires commits after ${gitBefore.base.tag}.`);
   }
 
-  const version = resolveReleaseVersion({
-    mode,
-    updateType,
-    base: gitBefore.base,
-    head: gitBefore.head,
-    dirty: gitBefore.dirty,
-    now: new Date()
-  });
+  const version =
+    mode === "tag"
+      ? gitBefore.version
+      : resolveReleaseVersion({
+          mode,
+          updateType: releaseArgument,
+          base: gitBefore.base,
+          head: gitBefore.head,
+          dirty: gitBefore.dirty,
+          now: new Date()
+        });
   const zipFileName = `${pluginDirectoryName}-${version}.zip`;
   const zipFilePath = path.join(releaseRoot, zipFileName);
+  const checksumFilePath = `${zipFilePath}.sha256`;
   const stageRoot = path.join(releaseRoot, `.tmp-${process.pid}`);
   const stagePluginDir = path.join(stageRoot, pluginDirectoryName);
   const finalPluginDir = path.join(releaseRoot, pluginDirectoryName);
 
   ensureZipCommand();
-  await ensureArchiveDoesNotExist(zipFilePath);
+  await ensureArtifactDoesNotExist(zipFilePath);
+  await ensureArtifactDoesNotExist(checksumFilePath);
   runTests();
 
   try {
@@ -55,6 +71,7 @@ async function main() {
     await writeReleasePackageJson(stagePluginDir, version);
     await verifyRelease(stagePluginDir, version, mode);
     createZip(stageRoot, zipFilePath);
+    await writeChecksum(zipFilePath, checksumFilePath);
 
     await rm(finalPluginDir, { recursive: true, force: true });
     await rename(stagePluginDir, finalPluginDir);
@@ -62,7 +79,10 @@ async function main() {
     await rm(stageRoot, { recursive: true, force: true });
   }
 
-  const gitAfter = readGitReleaseState(projectRoot);
+  const gitAfter =
+    mode === "tag"
+      ? readTaggedReleaseState(projectRoot, releaseArgument)
+      : readGitReleaseState(projectRoot);
   if (gitAfter.status !== gitBefore.status) {
     throw new Error("Release generation changed the project working tree.");
   }
@@ -77,10 +97,10 @@ function ensureZipCommand() {
   }
 }
 
-async function ensureArchiveDoesNotExist(zipFilePath) {
+async function ensureArtifactDoesNotExist(filePath) {
   try {
-    await readFile(zipFilePath);
-    throw new Error(`Release archive already exists: ${path.basename(zipFilePath)}`);
+    await readFile(filePath);
+    throw new Error(`Release artifact already exists: ${path.basename(filePath)}`);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
@@ -124,7 +144,7 @@ async function verifyRelease(pluginDir, version, mode) {
   if (releasePackage.version !== version || !pluginBundle.includes(version)) {
     throw new Error("Release artifact versions do not match.");
   }
-  if (mode === "prod" && pluginBundle.includes("0.0.0-dev")) {
+  if ((mode === "prod" || mode === "tag") && pluginBundle.includes("0.0.0-dev")) {
     throw new Error("Default development version leaked into production bundle.");
   }
   if (!readme.startsWith("# 教育辞書プラグイン")) {
@@ -142,6 +162,12 @@ function createZip(stageRoot, zipFilePath) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`zip command failed with status ${result.status}.`);
+}
+
+async function writeChecksum(zipFilePath, checksumFilePath) {
+  const zipContents = await readFile(zipFilePath);
+  const checksum = formatSha256Checksum(zipContents, path.basename(zipFilePath));
+  await writeFile(checksumFilePath, checksum);
 }
 
 main().catch((error) => {

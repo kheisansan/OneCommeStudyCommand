@@ -10,6 +10,8 @@ import {
   incrementVersion,
   parseStableTag,
   readGitReleaseState,
+  readTaggedReleaseState,
+  resolveTaggedReleaseVersion,
   resolveReleaseVersion
 } from "./release-version.mjs";
 
@@ -51,6 +53,12 @@ test("format development and production versions", () => {
   );
 });
 
+test("resolve only a strict stable tag as its release version", () => {
+  assert.equal(resolveTaggedReleaseVersion("v0.4.1"), "0.4.1");
+  assert.throws(() => resolveTaggedReleaseVersion("0.4.1"), /must match vX.Y.Z/);
+  assert.throws(() => resolveTaggedReleaseVersion("v0.4.1-beta.1"), /must match vX.Y.Z/);
+});
+
 test("read reachable tags, repository dirtiness, and commits after the base tag", () => {
   const repository = createRepository();
   git(repository, "tag", "v1.2.3");
@@ -63,6 +71,28 @@ test("read reachable tags, repository dirtiness, and commits after the base tag"
   assert.equal(state.commitsSinceTag, 1);
   assert.equal(state.dirty, true);
   assert.match(state.head, /^[0-9a-f]{7}$/);
+});
+
+test("read a stable tag that points to HEAD", () => {
+  const repository = createRepository();
+  git(repository, "tag", "v1.2.3");
+
+  const state = readTaggedReleaseState(repository, "v1.2.3");
+  assert.equal(state.tag, "v1.2.3");
+  assert.equal(state.version, "1.2.3");
+  assert.equal(state.dirty, false);
+
+  writeFileSync(path.join(repository, "dirty.txt"), "dirty");
+  assert.equal(readTaggedReleaseState(repository, "v1.2.3").dirty, true);
+});
+
+test("reject a missing tag or a tag that does not point to HEAD", () => {
+  const repository = createRepository();
+  git(repository, "tag", "v1.2.3");
+  commitFile(repository, "next.txt", "next", "next");
+
+  assert.throws(() => readTaggedReleaseState(repository, "v1.2.3"), /must point to HEAD/);
+  assert.throws(() => readTaggedReleaseState(repository, "v1.2.4"), /Git command failed/);
 });
 
 test("reject shallow repositories instead of guessing the release base", () => {

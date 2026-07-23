@@ -14,6 +14,7 @@
     "build": "tsc -p tsconfig.json",
     "release:dev": "node scripts/create-release.mjs dev",
     "release:prod": "node scripts/create-release.mjs prod",
+    "release:tag": "node scripts/create-release.mjs tag",
     "test": "npm run build && node --test dist/**/*.test.js scripts/**/*.test.mjs"
   },
   "devDependencies": {
