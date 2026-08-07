@@ -1,7 +1,10 @@
 import {
   parseSharedDictionaryResponse,
+  parseSharedPendingResponse,
   parseSharedSubmissionsResponse,
   type SharedDictionaryFetchPayload,
+  type SharedPendingSubmission,
+  type SharedReviewDecision,
   type SharedSubmissionInput,
   type SharedSubmissionRecord
 } from "./sharedDictionary";
@@ -107,6 +110,89 @@ export async function submitSharedEntry(
   const body = requested.body as { ok?: unknown; submissionId?: unknown } | null;
   if (body && body.ok === true && typeof body.submissionId === "string") {
     return { ok: true, submissionId: body.submissionId };
+  }
+  return serverErrorFrom(requested.body);
+}
+
+export type SharedRegisterOutcome =
+  | { ok: true }
+  | SharedDictionaryClientError;
+
+export type SharedPendingFetchOutcome =
+  | { ok: true; pending: SharedPendingSubmission[] }
+  | SharedDictionaryClientError;
+
+export type SharedReviewOutcome =
+  | { ok: true; result: "reviewed"; word: string }
+  | SharedDictionaryClientError;
+
+export async function registerSharedModerator(
+  endpointUrl: string,
+  password: string,
+  name: string,
+  token: string,
+  fetchImpl: FetchLike = fetch,
+  timeoutMs = SHARED_DICTIONARY_FETCH_TIMEOUT_MS
+): Promise<SharedRegisterOutcome> {
+  const requested = await requestJson(
+    endpointUrl,
+    {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "registerModerator", password, name, token })
+    },
+    fetchImpl,
+    timeoutMs
+  );
+  if (!requested.ok) return requested;
+
+  const body = requested.body as { ok?: unknown } | null;
+  if (body && body.ok === true) return { ok: true };
+  return serverErrorFrom(requested.body);
+}
+
+export async function fetchPendingSubmissions(
+  endpointUrl: string,
+  token: string,
+  fetchImpl: FetchLike = fetch,
+  timeoutMs = SHARED_DICTIONARY_FETCH_TIMEOUT_MS
+): Promise<SharedPendingFetchOutcome> {
+  const url = buildUrl(endpointUrl, { action: "pending", token });
+  const requested = await requestJson(url, undefined, fetchImpl, timeoutMs);
+  if (!requested.ok) return requested;
+
+  const pending = parseSharedPendingResponse(requested.body);
+  if (!pending) return serverErrorFrom(requested.body);
+  return { ok: true, pending };
+}
+
+export async function reviewSharedSubmission(
+  endpointUrl: string,
+  word: string,
+  decision: SharedReviewDecision,
+  token: string,
+  fetchImpl: FetchLike = fetch,
+  timeoutMs = SHARED_DICTIONARY_FETCH_TIMEOUT_MS
+): Promise<SharedReviewOutcome> {
+  const requested = await requestJson(
+    endpointUrl,
+    {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "review", word, decision, token })
+    },
+    fetchImpl,
+    timeoutMs
+  );
+  if (!requested.ok) return requested;
+
+  const body = requested.body as { ok?: unknown; word?: unknown } | null;
+  if (body && body.ok === true) {
+    return {
+      ok: true,
+      result: "reviewed",
+      word: typeof body.word === "string" ? body.word : word
+    };
   }
   return serverErrorFrom(requested.body);
 }

@@ -13,7 +13,15 @@
 var SHEET_DICTIONARY = "dictionary";
 var SHEET_SUBMISSIONS = "submissions";
 var SHEET_BLOCKED = "blocked-users";
+var SHEET_MODERATORS = "moderators";
 var SHEET_SETTINGS = "settings";
+
+/**
+ * モデレータ登録用パスワードを保存するスクリプトプロパティのキー。
+ * Apps Scriptエディタの「プロジェクトの設定」→「スクリプト プロパティ」で
+ * このキー名の値を設定する。シートには保存しない。
+ */
+var MODERATOR_PASSWORD_PROPERTY = "MODERATOR_PASSWORD";
 
 var DICTIONARY_HEADERS = ["id", "word", "reading", "category", "author", "enabled", "updatedAt"];
 var SUBMISSION_HEADERS = [
@@ -26,7 +34,8 @@ var SUBMISSION_HEADERS = [
   "token",
   "status",
   "createdAt",
-  "reviewedAt"
+  "reviewedAt",
+  "reviewedBy"
 ];
 
 // SUBMISSION_HEADERS の0始まり列番号
@@ -40,6 +49,10 @@ var SUB_TOKEN = 6;
 var SUB_STATUS = 7;
 var SUB_CREATED_AT = 8;
 var SUB_REVIEWED_AT = 9;
+var SUB_REVIEWED_BY = 10;
+
+var MODERATOR_HEADERS = ["token", "name", "registeredAt"];
+var MAX_PENDING_RESPONSE = 200;
 var BLOCKED_HEADERS = ["token", "note", "blockedAt"];
 var SETTINGS_HEADERS = ["key", "value"];
 
@@ -79,6 +92,7 @@ function setupSharedDictionary() {
   ensureSheet_(spreadsheet, SHEET_DICTIONARY, DICTIONARY_HEADERS);
   var submissions = ensureSheet_(spreadsheet, SHEET_SUBMISSIONS, SUBMISSION_HEADERS);
   ensureSheet_(spreadsheet, SHEET_BLOCKED, BLOCKED_HEADERS);
+  ensureSheet_(spreadsheet, SHEET_MODERATORS, MODERATOR_HEADERS);
   var settings = ensureSheet_(spreadsheet, SHEET_SETTINGS, SETTINGS_HEADERS);
 
   ensureSettingValue_(settings, "dictionaryVersion", 1);
@@ -138,7 +152,7 @@ function onSubmissionStatusEdit(e) {
       if (row <= 1) continue;
       var status = String(sheet.getRange(row, SUB_STATUS + 1).getValue());
       if (status !== "approved" && status !== "rejected") continue;
-      var result = processReviewRow_(sheet, dictionary, row, status);
+      var result = processReviewRow_(sheet, dictionary, row, status, "owner");
       if (result === "reviewed") {
         reviewedCount += 1;
         if (status === "approved") approvedCount += 1;
@@ -193,6 +207,9 @@ function doGet(e) {
   if (action === "submissions") {
     return handleGetSubmissions_(e);
   }
+  if (action === "pending") {
+    return handleGetPending_(e);
+  }
   return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
 }
 
@@ -203,10 +220,19 @@ function doPost(e) {
   } catch (error) {
     return jsonOutput_({ ok: false, code: "INVALID_BODY" });
   }
-  if (!body || body.action !== "submit") {
-    return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
+  if (!body) {
+    return jsonOutput_({ ok: false, code: "INVALID_BODY" });
   }
-  return handleSubmit_(body);
+  if (body.action === "submit") {
+    return handleSubmit_(body);
+  }
+  if (body.action === "registerModerator") {
+    return handleRegisterModerator_(body);
+  }
+  if (body.action === "review") {
+    return handleReview_(body);
+  }
+  return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
 }
 
 function handleGetDictionary_(e) {
@@ -442,6 +468,185 @@ function countSubmission_(token) {
 }
 
 // ---------------------------------------------------------------------------
+// モデレータ (登録・承認待ち取得・レビュー)
+// ---------------------------------------------------------------------------
+
+function handleRegisterModerator_(body) {
+  var token = typeof body.token === "string" ? body.token : "";
+  if (!TOKEN_PATTERN.test(token)) {
+    return jsonOutput_({ ok: false, code: "INVALID_TOKEN" });
+  }
+
+  var expected = PropertiesService.getScriptProperties().getProperty(
+    MODERATOR_PASSWORD_PROPERTY
+  );
+  if (!expected) {
+    return jsonOutput_({ ok: false, code: "PASSWORD_NOT_SET" });
+  }
+
+  var password = typeof body.password === "string" ? body.password : "";
+  if (password === "" || password !== expected) {
+    return jsonOutput_({ ok: false, code: "INVALID_PASSWORD" });
+  }
+
+  var name = collapseWhitespace_(typeof body.name === "string" ? body.name : "");
+  if (codePointLength_(name) > MAX_AUTHOR_CODE_POINTS) {
+    return jsonOutput_({ ok: false, code: "INVALID_AUTHOR" });
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (error) {
+    return jsonOutput_({ ok: false, code: "BUSY" });
+  }
+
+  try {
+    if (isTokenBlocked_(token)) {
+      return jsonOutput_({ ok: false, code: "BLOCKED" });
+    }
+
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MODERATORS);
+    if (!sheet) {
+      return jsonOutput_({ ok: false, code: "NOT_INITIALIZED" });
+    }
+
+    var existingRow = findModeratorRow_(sheet, token);
+    if (existingRow > 0) {
+      if (name !== "") {
+        sheet.getRange(existingRow, 2).setValue(name);
+      }
+    } else {
+      sheet.appendRow([token, name, new Date().toISOString()]);
+    }
+    return jsonOutput_({ ok: true });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleGetPending_(e) {
+  var token = e && e.parameter && e.parameter.token;
+  if (!token || !TOKEN_PATTERN.test(token)) {
+    return jsonOutput_({ ok: false, code: "INVALID_TOKEN" });
+  }
+  if (getModeratorName_(token) === null) {
+    return jsonOutput_({ ok: false, code: "NOT_MODERATOR" });
+  }
+
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBMISSIONS);
+  var pending = [];
+  if (sheet && sheet.getLastRow() > 1) {
+    var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, SUBMISSION_HEADERS.length).getValues();
+    for (var row = 0; row < values.length && pending.length < MAX_PENDING_RESPONSE; row += 1) {
+      var record = values[row];
+      if (String(record[SUB_STATUS]) !== "pending") continue;
+      pending.push({
+        submissionId: String(record[SUB_ID]),
+        type: record[SUB_TYPE] === "remove" ? "remove" : "add",
+        word: String(record[SUB_WORD]),
+        reading: String(record[SUB_READING]),
+        category: String(record[SUB_CATEGORY] || ""),
+        authorName: String(record[SUB_AUTHOR] || ""),
+        createdAt: formatTimestamp_(record[SUB_CREATED_AT])
+      });
+    }
+  }
+  return jsonOutput_({ ok: true, pending: pending });
+}
+
+function handleReview_(body) {
+  var token = typeof body.token === "string" ? body.token : "";
+  if (!TOKEN_PATTERN.test(token)) {
+    return jsonOutput_({ ok: false, code: "INVALID_TOKEN" });
+  }
+
+  var moderatorName = getModeratorName_(token);
+  if (moderatorName === null) {
+    return jsonOutput_({ ok: false, code: "NOT_MODERATOR" });
+  }
+
+  var decision = body.decision;
+  if (decision !== "approve" && decision !== "reject") {
+    return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
+  }
+
+  var word = normalizeDictionaryWord_(typeof body.word === "string" ? body.word : "");
+  if (word === "") {
+    return jsonOutput_({ ok: false, code: "INVALID_WORD" });
+  }
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (error) {
+    return jsonOutput_({ ok: false, code: "BUSY" });
+  }
+
+  try {
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var submissions = spreadsheet.getSheetByName(SHEET_SUBMISSIONS);
+    var dictionary = spreadsheet.getSheetByName(SHEET_DICTIONARY);
+    if (!submissions || !dictionary) {
+      return jsonOutput_({ ok: false, code: "NOT_INITIALIZED" });
+    }
+
+    var rowNumber = findPendingRowByWord_(submissions, word);
+    if (rowNumber < 0) {
+      return jsonOutput_({ ok: false, code: "NOT_FOUND" });
+    }
+
+    var nextStatus = decision === "approve" ? "approved" : "rejected";
+    var reviewedBy = moderatorName !== "" ? moderatorName : "moderator:" + token.slice(0, 8);
+    var result = processReviewRow_(submissions, dictionary, rowNumber, nextStatus, reviewedBy);
+    if (result !== "reviewed") {
+      return jsonOutput_({ ok: false, code: "NOT_FOUND" });
+    }
+    if (nextStatus === "approved") {
+      bumpDictionaryVersion_();
+    }
+    return jsonOutput_({ ok: true, word: word, decision: decision });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function findPendingRowByWord_(submissions, word) {
+  if (submissions.getLastRow() <= 1) return -1;
+  var values = submissions
+    .getRange(2, 1, submissions.getLastRow() - 1, SUBMISSION_HEADERS.length)
+    .getValues();
+  for (var row = 0; row < values.length; row += 1) {
+    if (String(values[row][SUB_STATUS]) !== "pending") continue;
+    if (normalizeDictionaryWord_(String(values[row][SUB_WORD])) === word) {
+      return row + 2;
+    }
+  }
+  return -1;
+}
+
+function findModeratorRow_(sheet, token) {
+  if (sheet.getLastRow() <= 1) return -1;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
+  for (var row = 0; row < values.length; row += 1) {
+    if (String(values[row][0]) === token) return row + 2;
+  }
+  return -1;
+}
+
+/** モデレータ名を返す。未登録またはブロック済みならnull */
+function getModeratorName_(token) {
+  if (isTokenBlocked_(token)) return null;
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MODERATORS);
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+  for (var row = 0; row < values.length; row += 1) {
+    if (String(values[row][0]) === token) return String(values[row][1] || "");
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // 承認・却下・ブロック (スプレッドシートのメニューから実行)
 // ---------------------------------------------------------------------------
 
@@ -470,7 +675,13 @@ function reviewSelectedSubmissions_(nextStatus) {
   var skipped = 0;
 
   for (var index = 0; index < selection.rows.length; index += 1) {
-    var result = processReviewRow_(submissions, dictionary, selection.rows[index], nextStatus);
+    var result = processReviewRow_(
+      submissions,
+      dictionary,
+      selection.rows[index],
+      nextStatus,
+      "owner"
+    );
     if (result === "reviewed") {
       reviewed += 1;
     } else {
@@ -490,7 +701,7 @@ function reviewSelectedSubmissions_(nextStatus) {
  * 1件の申請を処理する。処理済み (reviewedAtあり) の行はスキップする。
  * 承認時: type=add は辞書へ追加、type=remove は辞書から該当単語の行を削除する。
  */
-function processReviewRow_(submissions, dictionary, rowNumber, nextStatus) {
+function processReviewRow_(submissions, dictionary, rowNumber, nextStatus, reviewedBy) {
   var record = submissions
     .getRange(rowNumber, 1, 1, SUBMISSION_HEADERS.length)
     .getValues()[0];
@@ -519,6 +730,7 @@ function processReviewRow_(submissions, dictionary, rowNumber, nextStatus) {
 
   submissions.getRange(rowNumber, SUB_STATUS + 1).setValue(nextStatus);
   submissions.getRange(rowNumber, SUB_REVIEWED_AT + 1).setValue(now);
+  submissions.getRange(rowNumber, SUB_REVIEWED_BY + 1).setValue(reviewedBy || "owner");
   return "reviewed";
 }
 

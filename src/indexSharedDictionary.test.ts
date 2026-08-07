@@ -260,7 +260,9 @@ test("GET exposes the shared dictionary state", async () => {
   assert.deepEqual(response.response.sharedDictionary, {
     settings: { endpointUrl: ENDPOINT },
     cache: null,
-    submissions: []
+    submissions: [],
+    moderator: { registered: false, name: "", registeredAt: "" },
+    pending: []
   });
   plugin.destroy();
 });
@@ -429,5 +431,255 @@ test("shared commands can be disabled via settings", async () => {
   };
   const filteredComment = plugin.filterComment(comment, null, { name: "alice" });
   assert.equal(filteredComment, comment);
+  plugin.destroy();
+});
+
+async function registerAsModerator(): Promise<void> {
+  await withFetchStub(
+    () => ({ ok: true }),
+    async () => {
+      const registered = await sharedRequest({
+        action: "registerModerator",
+        password: "secret-password",
+        name: "mod-alice"
+      });
+      assert.equal(registered.code, 200);
+      assert.equal(registered.response.sharedDictionary.moderator.registered, true);
+      assert.equal(registered.response.sharedDictionary.moderator.name, "mod-alice");
+    }
+  );
+}
+
+test("moderator registration requires the endpoint and posts the password", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+
+  const unconfigured = await sharedRequest({
+    action: "registerModerator",
+    password: "x"
+  });
+  assert.equal(unconfigured.code, 400);
+  assert.equal(unconfigured.response.sharedError.code, "NOT_CONFIGURED");
+
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  let postedBody: Record<string, unknown> | null = null;
+  await withFetchStub(
+    (_url, init) => {
+      postedBody = JSON.parse(init?.body ?? "{}");
+      return { ok: true };
+    },
+    async () => {
+      const registered = await sharedRequest({
+        action: "registerModerator",
+        password: "secret-password",
+        name: "mod-alice"
+      });
+      assert.equal(registered.code, 200);
+    }
+  );
+
+  assert.equal(postedBody!.action, "registerModerator");
+  assert.equal(postedBody!.password, "secret-password");
+  assert.equal(postedBody!.name, "mod-alice");
+  assert.equal(typeof postedBody!.token, "string");
+  plugin.destroy();
+});
+
+test("moderator registration surfaces an invalid password", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  await withFetchStub(
+    () => ({ ok: false, code: "INVALID_PASSWORD" }),
+    async () => {
+      const rejected = await sharedRequest({
+        action: "registerModerator",
+        password: "wrong"
+      });
+      assert.equal(rejected.code, 502);
+      assert.equal(rejected.response.sharedError.serverCode, "INVALID_PASSWORD");
+      assert.equal(rejected.response.sharedDictionary.moderator.registered, false);
+    }
+  );
+  plugin.destroy();
+});
+
+test("refreshPending requires moderator registration and stores the pending list", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  const notModerator = await sharedRequest({ action: "refreshPending" });
+  assert.equal(notModerator.code, 403);
+  assert.equal(notModerator.response.sharedError.code, "NOT_MODERATOR");
+
+  await registerAsModerator();
+
+  await withFetchStub(
+    (url) => {
+      assert.equal(new URL(url).searchParams.get("action"), "pending");
+      return {
+        ok: true,
+        pending: [
+          {
+            submissionId: "p-1",
+            type: "add",
+            word: "github",
+            reading: "ギットハブ",
+            category: "IT",
+            authorName: "user99",
+            createdAt: "2026-08-07T00:00:00.000Z"
+          }
+        ]
+      };
+    },
+    async () => {
+      const refreshed = await sharedRequest({ action: "refreshPending" });
+      assert.equal(refreshed.code, 200);
+      assert.equal(refreshed.response.sharedDictionary.pending.length, 1);
+      assert.equal(refreshed.response.sharedDictionary.pending[0].word, "github");
+    }
+  );
+  plugin.destroy();
+});
+
+test("review sends the decision and removes the pending entry locally", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  await registerAsModerator();
+
+  await withFetchStub(
+    (url) => ({
+      ok: true,
+      pending: [
+        {
+          submissionId: "p-1",
+          type: "add",
+          word: "github",
+          reading: "ギットハブ",
+          category: "",
+          authorName: "",
+          createdAt: ""
+        }
+      ]
+    }),
+    async () => {
+      await sharedRequest({ action: "refreshPending" });
+    }
+  );
+
+  let postedBody: Record<string, unknown> | null = null;
+  await withFetchStub(
+    (_url, init) => {
+      postedBody = JSON.parse(init?.body ?? "{}");
+      return { ok: true, word: "github", decision: "approve" };
+    },
+    async () => {
+      const reviewed = await sharedRequest({
+        action: "review",
+        word: "GitHub",
+        decision: "approve"
+      });
+      assert.equal(reviewed.code, 200);
+      assert.deepEqual(reviewed.response.sharedReviewResult, {
+        word: "github",
+        decision: "approve"
+      });
+      assert.equal(reviewed.response.sharedDictionary.pending.length, 0);
+    }
+  );
+
+  assert.equal(postedBody!.action, "review");
+  assert.equal(postedBody!.word, "github");
+  assert.equal(postedBody!.decision, "approve");
+  plugin.destroy();
+});
+
+test("revoked moderators are cleared locally on server rejection", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  await registerAsModerator();
+
+  await withFetchStub(
+    () => ({ ok: false, code: "NOT_MODERATOR" }),
+    async () => {
+      const rejected = await sharedRequest({ action: "refreshPending" });
+      assert.equal(rejected.code, 502);
+      assert.equal(rejected.response.sharedDictionary.moderator.registered, false);
+    }
+  );
+  plugin.destroy();
+});
+
+test("shared approve command runs only for the channel owner", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  await registerAsModerator();
+
+  let reviewPosted = false;
+  await withFetchStub(
+    (_url, init) => {
+      if (init?.body) {
+        reviewPosted = true;
+        return { ok: true, word: "github", decision: "approve" };
+      }
+      return { ok: true };
+    },
+    async () => {
+      const viewerComment = {
+        data: {
+          comment: "共有承認(GitHub)",
+          speechText: "共有承認(GitHub)",
+          isOwner: false
+        }
+      };
+      const ignored = plugin.filterComment(viewerComment, null, { name: "viewer" });
+      assert.equal(ignored, viewerComment);
+      assert.equal(ignored.data.speechText, "共有承認(GitHub)");
+
+      const ownerComment = plugin.filterComment(
+        {
+          data: {
+            comment: "共有承認(GitHub)",
+            speechText: "共有承認(GitHub)",
+            isOwner: true
+          }
+        },
+        null,
+        { name: "owner" }
+      );
+      assert.notEqual(ownerComment, false);
+      assert.equal(ownerComment.data?.speechText, "github の承認を送信しました。");
+      await waitForAsyncSubmission();
+    }
+  );
+
+  assert.equal(reviewPosted, true);
+  plugin.destroy();
+});
+
+test("shared reject command requires moderator registration", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  const filteredComment = plugin.filterComment(
+    {
+      data: {
+        comment: "共有却下(GitHub)",
+        speechText: "共有却下(GitHub)",
+        isOwner: true
+      }
+    },
+    null,
+    { name: "owner" }
+  );
+  assert.notEqual(filteredComment, false);
+  assert.equal(filteredComment.data?.speechText, "モデレーター登録がされていません。");
   plugin.destroy();
 });

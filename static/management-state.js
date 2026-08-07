@@ -7,7 +7,8 @@
     "educationCommandEnabled",
     "forgetCommandEnabled",
     "sharedEducationCommandEnabled",
-    "sharedForgetCommandEnabled"
+    "sharedForgetCommandEnabled",
+    "sharedReviewCommandEnabled"
   ];
 
   function createManagementState() {

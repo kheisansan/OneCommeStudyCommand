@@ -304,7 +304,8 @@ test("management API returns settings and dictionary", () => {
     educationCommandEnabled: true,
     forgetCommandEnabled: true,
     sharedEducationCommandEnabled: true,
-    sharedForgetCommandEnabled: true
+    sharedForgetCommandEnabled: true,
+    sharedReviewCommandEnabled: true
   });
   assert.equal(response.response.dictionary.version, 2);
   assert.equal(response.response.dictionary.entries.length, 1);
@@ -345,7 +346,8 @@ test("management API updates settings only", () => {
     educationCommandEnabled: false,
     forgetCommandEnabled: true,
     sharedEducationCommandEnabled: true,
-    sharedForgetCommandEnabled: true
+    sharedForgetCommandEnabled: true,
+    sharedReviewCommandEnabled: true
   });
   assert.deepEqual(store.get("dictionary"), {
     version: 2,
@@ -372,7 +374,8 @@ test("management API accepts JSON string body and complements missing settings",
     educationCommandEnabled: false,
     forgetCommandEnabled: true,
     sharedEducationCommandEnabled: true,
-    sharedForgetCommandEnabled: true
+    sharedForgetCommandEnabled: true,
+    sharedReviewCommandEnabled: true
   });
   plugin.destroy();
 });

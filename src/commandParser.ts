@@ -4,6 +4,8 @@ const TEACH_PREFIX = "教育";
 const FORGET_PREFIX = "忘却";
 const SHARED_TEACH_PREFIX = "共有教育";
 const SHARED_FORGET_PREFIX = "共有忘却";
+const SHARED_APPROVE_PREFIX = "共有承認";
+const SHARED_REJECT_PREFIX = "共有却下";
 const SEARCH_PREFIX = "教育検索(";
 const OPEN_PARENTHESIS = new Set(["(", "（"]);
 const CLOSE_PARENTHESIS = new Set([")", "）"]);
@@ -27,6 +29,20 @@ export function parseEducationCommand(input: string): ParsedCommand | null {
     const parsed = parseForget(sharedForgetBody);
     if (parsed.type === "invalid") return parsed;
     return { type: "sharedForget", word: parsed.word };
+  }
+
+  const sharedApproveBody = getCommandBody(text, SHARED_APPROVE_PREFIX);
+  if (sharedApproveBody !== null) {
+    const word = sharedApproveBody.trim();
+    if (!word) return { type: "invalid", message: "承認する単語が空です" };
+    return { type: "sharedApprove", word };
+  }
+
+  const sharedRejectBody = getCommandBody(text, SHARED_REJECT_PREFIX);
+  if (sharedRejectBody !== null) {
+    const word = sharedRejectBody.trim();
+    if (!word) return { type: "invalid", message: "却下する単語が空です" };
+    return { type: "sharedReject", word };
   }
 
   const teachBody = getCommandBody(text, TEACH_PREFIX);

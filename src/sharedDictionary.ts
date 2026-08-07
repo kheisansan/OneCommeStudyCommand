@@ -254,6 +254,61 @@ export function isSubmissionType(value: unknown): value is SharedSubmissionType 
   return value === "add" || value === "remove";
 }
 
+export type SharedModeratorState = {
+  registered: boolean;
+  name: string;
+  registeredAt: string;
+};
+
+export type SharedReviewDecision = "approve" | "reject";
+
+export type SharedPendingSubmission = {
+  submissionId: string;
+  type: SharedSubmissionType;
+  word: string;
+  reading: string;
+  category: string;
+  authorName: string;
+  createdAt: string;
+};
+
+export const MAX_SHARED_PENDING_RECORDS = 200;
+export const MAX_SHARED_MODERATOR_NAME_CODE_POINTS = 50;
+export const MAX_SHARED_MODERATOR_PASSWORD_LENGTH = 200;
+
+export function parseSharedPendingResponse(
+  value: unknown
+): SharedPendingSubmission[] | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { ok?: unknown; pending?: unknown };
+  if (candidate.ok !== true || !Array.isArray(candidate.pending)) return null;
+  if (candidate.pending.length > MAX_SHARED_PENDING_RECORDS) return null;
+
+  const records: SharedPendingSubmission[] = [];
+  for (const raw of candidate.pending) {
+    if (!raw || typeof raw !== "object") return null;
+    const record = raw as Record<string, unknown>;
+    if (typeof record.submissionId !== "string" || record.submissionId.length === 0) {
+      return null;
+    }
+    if (typeof record.word !== "string" || typeof record.reading !== "string") return null;
+    records.push({
+      submissionId: record.submissionId,
+      type: isSubmissionType(record.type) ? record.type : "add",
+      word: record.word,
+      reading: record.reading,
+      category: typeof record.category === "string" ? record.category : "",
+      authorName: typeof record.authorName === "string" ? record.authorName : "",
+      createdAt: typeof record.createdAt === "string" ? record.createdAt : ""
+    });
+  }
+  return records;
+}
+
+export function isSharedReviewDecision(value: unknown): value is SharedReviewDecision {
+  return value === "approve" || value === "reject";
+}
+
 export type SharedImportResult = {
   addedCount: number;
   skippedCount: number;

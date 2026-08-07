@@ -11,6 +11,7 @@ const educationCommandEnabled = document.getElementById("educationCommandEnabled
 const forgetCommandEnabled = document.getElementById("forgetCommandEnabled");
 const sharedEducationCommandEnabled = document.getElementById("sharedEducationCommandEnabled");
 const sharedForgetCommandEnabled = document.getElementById("sharedForgetCommandEnabled");
+const sharedReviewCommandEnabled = document.getElementById("sharedReviewCommandEnabled");
 const settingsState = document.getElementById("settingsState");
 const addEntryForm = document.getElementById("addEntryForm");
 const addEntryButton = document.getElementById("addEntryButton");
@@ -41,6 +42,14 @@ const sharedSubmitAuthor = document.getElementById("sharedSubmitAuthor");
 const sharedSubmitButton = document.getElementById("sharedSubmitButton");
 const refreshSubmissionsButton = document.getElementById("refreshSubmissionsButton");
 const sharedSubmissionsBody = document.getElementById("sharedSubmissionsBody");
+const moderatorState = document.getElementById("moderatorState");
+const moderatorRegisterForm = document.getElementById("moderatorRegisterForm");
+const moderatorPassword = document.getElementById("moderatorPassword");
+const moderatorName = document.getElementById("moderatorName");
+const registerModeratorButton = document.getElementById("registerModeratorButton");
+const moderatorPanel = document.getElementById("moderatorPanel");
+const refreshPendingButton = document.getElementById("refreshPendingButton");
+const sharedPendingBody = document.getElementById("sharedPendingBody");
 
 let state = stateApi.createManagementState();
 let sharedState = sharedApi.createSharedDictionaryState();
@@ -56,6 +65,7 @@ educationCommandEnabled.addEventListener("change", updateCurrentSettings);
 forgetCommandEnabled.addEventListener("change", updateCurrentSettings);
 sharedEducationCommandEnabled.addEventListener("change", updateCurrentSettings);
 sharedForgetCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedReviewCommandEnabled.addEventListener("change", updateCurrentSettings);
 addEntryForm.addEventListener("submit", (event) => {
   event.preventDefault();
   addEntry();
@@ -74,6 +84,8 @@ sharedSubmitForm.addEventListener("submit", (event) => {
   submitSharedEntry();
 });
 refreshSubmissionsButton.addEventListener("click", refreshSharedSubmissions);
+registerModeratorButton.addEventListener("click", registerModerator);
+refreshPendingButton.addEventListener("click", refreshSharedPending);
 
 loadManagementData();
 
@@ -505,6 +517,60 @@ async function submitSharedEntry() {
   }
 }
 
+async function registerModerator() {
+  const password = moderatorPassword.value;
+  if (!password.trim()) {
+    setStatus("パスワードを入力してください");
+    return;
+  }
+
+  try {
+    const data = await sharedRequest(
+      { action: "registerModerator", password, name: moderatorName.value.trim() },
+      "モデレータ登録中"
+    );
+    if (!data) return;
+    applyManagementData(data);
+    moderatorPassword.value = "";
+    renderAll();
+    setStatus("モデレータとして登録しました");
+    await refreshSharedPending();
+  } catch (error) {
+    reportSharedError(error, "モデレータ登録に失敗しました");
+  }
+}
+
+async function refreshSharedPending() {
+  try {
+    const data = await sharedRequest({ action: "refreshPending" }, "承認待ちを取得中");
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus("承認待ちを更新しました");
+  } catch (error) {
+    reportSharedError(error, "承認待ちの取得に失敗しました");
+    renderAll();
+  }
+}
+
+async function reviewPendingSubmission(word, decision) {
+  if (state.requestLocked) return;
+  const decisionLabel = decision === "approve" ? "承認" : "却下";
+  if (!window.confirm(`「${word}」を${decisionLabel}しますか？`)) return;
+  if (state.requestLocked) return;
+
+  try {
+    const data = await sharedRequest({ action: "review", word, decision }, `${decisionLabel}中`);
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus(`${word} を${decisionLabel}しました`);
+  } catch (error) {
+    reportSharedError(error, `${decisionLabel}に失敗しました`);
+    renderAll();
+  }
+}
+
 async function refreshSharedSubmissions() {
   try {
     const data = await sharedRequest({ action: "refreshSubmissions" }, "投稿状況を確認中");
@@ -524,7 +590,76 @@ function renderSharedDictionary() {
   sharedDictionaryBody.hidden = !sharedState.settings.endpointUrl;
   renderSharedFetchState();
   renderSharedEntries();
+  renderSharedModerator();
   renderSharedSubmissions();
+}
+
+function renderSharedModerator() {
+  const registered = sharedState.moderator.registered;
+  moderatorRegisterForm.hidden = registered;
+  moderatorPanel.hidden = !registered;
+  if (registered) {
+    const name = sharedState.moderator.name ? `「${sharedState.moderator.name}」` : "";
+    moderatorState.textContent = `モデレータ${name}として登録済みです。承認・却下ができます。`;
+  } else {
+    moderatorState.textContent =
+      "未登録です。オーナーから伝えられたパスワードで登録すると、承認・却下ができるようになります。";
+  }
+  renderSharedPending();
+}
+
+function renderSharedPending() {
+  sharedPendingBody.replaceChildren();
+
+  if (sharedState.pending.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 7;
+    cell.textContent = "承認待ちはありません";
+    row.append(cell);
+    sharedPendingBody.append(row);
+    return;
+  }
+
+  for (const submission of sharedState.pending) {
+    const row = document.createElement("tr");
+    const actionsCell = document.createElement("td");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+
+    const approveButton = document.createElement("button");
+    approveButton.type = "button";
+    approveButton.textContent = "承認";
+    approveButton.dataset.pendingReview = submission.word;
+    approveButton.disabled = state.requestLocked;
+    approveButton.addEventListener("click", () =>
+      reviewPendingSubmission(submission.word, "approve")
+    );
+
+    const rejectButton = document.createElement("button");
+    rejectButton.type = "button";
+    rejectButton.className = "danger-button";
+    rejectButton.textContent = "却下";
+    rejectButton.dataset.pendingReview = submission.word;
+    rejectButton.disabled = state.requestLocked;
+    rejectButton.addEventListener("click", () =>
+      reviewPendingSubmission(submission.word, "reject")
+    );
+
+    actions.append(approveButton, rejectButton);
+    actionsCell.append(actions);
+    row.append(
+      createCell(sharedApi.submissionTypeLabel(submission.type)),
+      createCell(submission.word),
+      createCell(submission.reading || "-"),
+      createCell(submission.category || "-"),
+      createCell(submission.authorName || "-"),
+      createCell(formatDate(submission.createdAt)),
+      actionsCell
+    );
+    sharedPendingBody.append(row);
+  }
 }
 
 function renderSharedFetchState() {
@@ -660,6 +795,7 @@ function renderSettings() {
   forgetCommandEnabled.checked = state.currentSettings.forgetCommandEnabled;
   sharedEducationCommandEnabled.checked = state.currentSettings.sharedEducationCommandEnabled;
   sharedForgetCommandEnabled.checked = state.currentSettings.sharedForgetCommandEnabled;
+  sharedReviewCommandEnabled.checked = state.currentSettings.sharedReviewCommandEnabled;
   updateSettingsState();
 }
 
@@ -789,7 +925,8 @@ function updateCurrentSettings() {
     educationCommandEnabled: educationCommandEnabled.checked,
     forgetCommandEnabled: forgetCommandEnabled.checked,
     sharedEducationCommandEnabled: sharedEducationCommandEnabled.checked,
-    sharedForgetCommandEnabled: sharedForgetCommandEnabled.checked
+    sharedForgetCommandEnabled: sharedForgetCommandEnabled.checked,
+    sharedReviewCommandEnabled: sharedReviewCommandEnabled.checked
   });
   updateSettingsState();
   updateControls();
@@ -811,6 +948,7 @@ function updateControls() {
   forgetCommandEnabled.disabled = locked;
   sharedEducationCommandEnabled.disabled = locked;
   sharedForgetCommandEnabled.disabled = locked;
+  sharedReviewCommandEnabled.disabled = locked;
   entryWord.disabled = locked;
   entryReading.disabled = locked;
   addEntryButton.disabled = locked;
@@ -826,6 +964,13 @@ function updateControls() {
   sharedSubmitAuthor.disabled = locked;
   sharedSubmitButton.disabled = locked;
   refreshSubmissionsButton.disabled = locked;
+  moderatorPassword.disabled = locked;
+  moderatorName.disabled = locked;
+  registerModeratorButton.disabled = locked;
+  refreshPendingButton.disabled = locked;
+  document.querySelectorAll("[data-pending-review]").forEach((button) => {
+    button.disabled = locked;
+  });
   importSharedButton.disabled = locked || sharedState.selectedIds.size === 0;
   const importableShared = new Set(sharedApi.importableIds(sharedState.cache, state.entries));
   document.querySelectorAll("[data-shared-select]").forEach((checkbox) => {

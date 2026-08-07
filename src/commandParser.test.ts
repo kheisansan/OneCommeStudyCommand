@@ -75,3 +75,22 @@ test("shared commands report invalid bodies", () => {
     message: "忘却する単語が空です"
   });
 });
+
+test("parse shared approve and shared reject commands", () => {
+  assert.deepEqual(parseEducationCommand("共有承認( GitHub )"), {
+    type: "sharedApprove",
+    word: "GitHub"
+  });
+  assert.deepEqual(parseEducationCommand("共有却下（ＧitＨub）"), {
+    type: "sharedReject",
+    word: "ＧitＨub"
+  });
+  assert.deepEqual(parseEducationCommand("共有承認()"), {
+    type: "invalid",
+    message: "承認する単語が空です"
+  });
+  assert.deepEqual(parseEducationCommand("共有却下( )"), {
+    type: "invalid",
+    message: "却下する単語が空です"
+  });
+});

@@ -170,7 +170,8 @@ function settings(educationCommandEnabled, forgetCommandEnabled) {
     educationCommandEnabled,
     forgetCommandEnabled,
     sharedEducationCommandEnabled: false,
-    sharedForgetCommandEnabled: false
+    sharedForgetCommandEnabled: false,
+    sharedReviewCommandEnabled: false
   };
 }
 

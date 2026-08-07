@@ -8,7 +8,9 @@
       settings: { endpointUrl: null },
       cache: null,
       submissions: [],
-      selectedIds: new Set()
+      selectedIds: new Set(),
+      moderator: { registered: false, name: "", registeredAt: "" },
+      pending: []
     };
   }
 
@@ -31,12 +33,24 @@
     };
     const cache = isCache(shared.cache) ? shared.cache : null;
     const submissions = Array.isArray(shared.submissions) ? shared.submissions : [];
+    const moderator =
+      shared.moderator && shared.moderator.registered === true
+        ? {
+            registered: true,
+            name: typeof shared.moderator.name === "string" ? shared.moderator.name : "",
+            registeredAt:
+              typeof shared.moderator.registeredAt === "string"
+                ? shared.moderator.registeredAt
+                : ""
+          }
+        : { registered: false, name: "", registeredAt: "" };
+    const pending = Array.isArray(shared.pending) ? shared.pending : [];
     const importable = new Set(importableIds(cache, localEntries));
     const selectedIds = new Set(
       [...state.selectedIds].filter((id) => importable.has(id))
     );
 
-    return { ...state, settings, cache, submissions, selectedIds };
+    return { ...state, settings, cache, submissions, selectedIds, moderator, pending };
   }
 
   function isCache(value) {
@@ -104,7 +118,10 @@
         INVALID_WORD: "単語が不正です。",
         INVALID_READING: "読みが不正です。",
         INVALID_CATEGORY: "カテゴリが不正です。",
-        INVALID_AUTHOR: "投稿者名が不正です。"
+        INVALID_AUTHOR: "投稿者名・表示名が不正です。",
+        PASSWORD_NOT_SET: "共有辞書側にモデレータ用パスワードが設定されていません。オーナーに確認してください。",
+        INVALID_PASSWORD: "パスワードが違います。",
+        NOT_MODERATOR: "モデレータ登録が確認できませんでした。登録が解除された可能性があります。"
       };
       return (
         serverMessages[sharedError.serverCode] ||
@@ -118,6 +135,7 @@
       INVALID_ACTION: "リクエストが不正です。",
       INVALID_SUBMISSION: formatSubmissionErrors(sharedError.errors),
       NO_CACHE: "共有辞書を取得してから取り込んでください。",
+      NOT_MODERATOR: "モデレータ登録が必要です。",
       NETWORK_ERROR: "共有辞書へ接続できませんでした。",
       TIMEOUT: "共有辞書への接続がタイムアウトしました。",
       HTTP_ERROR: "共有辞書がエラーを返しました。",

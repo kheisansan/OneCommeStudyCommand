@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import {
+  isSharedReviewDecision,
   isSubmissionType,
+  MAX_SHARED_MODERATOR_NAME_CODE_POINTS,
+  MAX_SHARED_MODERATOR_PASSWORD_LENGTH,
   MAX_SHARED_SUBMISSION_RECORDS,
   type SharedDictionaryCache,
   type SharedDictionaryEntry,
   type SharedDictionarySettings,
+  type SharedModeratorState,
+  type SharedPendingSubmission,
+  type SharedReviewDecision,
   type SharedSubmissionRecord,
   type SharedSubmissionStatus
 } from "./sharedDictionary";
@@ -14,6 +20,8 @@ export const SHARED_SETTINGS_STORE_KEY = "sharedDictionarySettings";
 export const SHARED_CACHE_STORE_KEY = "sharedDictionaryCache";
 export const SHARED_TOKEN_STORE_KEY = "sharedDictionaryToken";
 export const SHARED_SUBMISSIONS_STORE_KEY = "sharedDictionarySubmissions";
+export const SHARED_MODERATOR_STORE_KEY = "sharedDictionaryModerator";
+export const SHARED_PENDING_STORE_KEY = "sharedDictionaryPending";
 export const SHARED_CACHE_TTL_MS = 60 * 60 * 1000;
 
 export type SharedDictionaryAction =
@@ -21,7 +29,10 @@ export type SharedDictionaryAction =
   | { action: "fetch"; force: boolean }
   | { action: "submit"; word: string; reading: string; category: string; authorName: string }
   | { action: "refreshSubmissions" }
-  | { action: "import"; ids: string[] };
+  | { action: "import"; ids: string[] }
+  | { action: "registerModerator"; password: string; name: string }
+  | { action: "refreshPending" }
+  | { action: "review"; word: string; decision: SharedReviewDecision };
 
 export function parseSharedDictionaryAction(value: unknown): SharedDictionaryAction | null {
   if (!value || typeof value !== "object") return null;
@@ -61,6 +72,25 @@ export function parseSharedDictionaryAction(value: unknown): SharedDictionaryAct
       if (candidate.ids.length === 0) return null;
       if (!candidate.ids.every((id) => typeof id === "string" && id.length > 0)) return null;
       return { action: "import", ids: candidate.ids as string[] };
+    case "registerModerator": {
+      if (typeof candidate.password !== "string") return null;
+      const password = candidate.password.trim();
+      if (password.length === 0 || password.length > MAX_SHARED_MODERATOR_PASSWORD_LENGTH) {
+        return null;
+      }
+      if (candidate.name !== undefined && typeof candidate.name !== "string") return null;
+      const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+      if (Array.from(name).length > MAX_SHARED_MODERATOR_NAME_CODE_POINTS) return null;
+      return { action: "registerModerator", password, name };
+    }
+    case "refreshPending":
+      return { action: "refreshPending" };
+    case "review":
+      if (typeof candidate.word !== "string" || candidate.word.trim().length === 0) {
+        return null;
+      }
+      if (!isSharedReviewDecision(candidate.decision)) return null;
+      return { action: "review", word: candidate.word, decision: candidate.decision };
     default:
       return null;
   }
@@ -154,6 +184,68 @@ export function mergeSubmissionRecords(
   const merged = [...serverRecords, ...localOnly].slice(0, MAX_SHARED_SUBMISSION_RECORDS);
   store.set(SHARED_SUBMISSIONS_STORE_KEY, merged);
   return merged;
+}
+
+export function loadModeratorState(store: StoreLike): SharedModeratorState {
+  const value = store.get(SHARED_MODERATOR_STORE_KEY);
+  if (value && typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    if (candidate.registered === true) {
+      return {
+        registered: true,
+        name: typeof candidate.name === "string" ? candidate.name : "",
+        registeredAt: typeof candidate.registeredAt === "string" ? candidate.registeredAt : ""
+      };
+    }
+  }
+  return { registered: false, name: "", registeredAt: "" };
+}
+
+export function saveModeratorState(store: StoreLike, state: SharedModeratorState): void {
+  store.set(SHARED_MODERATOR_STORE_KEY, state);
+}
+
+export function clearModeratorState(store: StoreLike): void {
+  store.set(SHARED_MODERATOR_STORE_KEY, { registered: false, name: "", registeredAt: "" });
+}
+
+export function loadPendingSubmissions(store: StoreLike): SharedPendingSubmission[] {
+  const value = store.get(SHARED_PENDING_STORE_KEY);
+  if (!Array.isArray(value)) return [];
+  return value.filter(isPendingSubmission);
+}
+
+export function savePendingSubmissions(
+  store: StoreLike,
+  pending: SharedPendingSubmission[]
+): void {
+  store.set(SHARED_PENDING_STORE_KEY, pending);
+}
+
+export function removePendingSubmissionByWord(
+  store: StoreLike,
+  normalizedWord: string,
+  normalize: (value: string) => string
+): void {
+  const pending = loadPendingSubmissions(store).filter(
+    (submission) => normalize(submission.word) !== normalizedWord
+  );
+  savePendingSubmissions(store, pending);
+}
+
+function isPendingSubmission(value: unknown): value is SharedPendingSubmission {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.submissionId === "string" &&
+    candidate.submissionId.length > 0 &&
+    isSubmissionType(candidate.type) &&
+    typeof candidate.word === "string" &&
+    typeof candidate.reading === "string" &&
+    typeof candidate.category === "string" &&
+    typeof candidate.authorName === "string" &&
+    typeof candidate.createdAt === "string"
+  );
 }
 
 function isSharedDictionaryEntry(value: unknown): value is SharedDictionaryEntry {
