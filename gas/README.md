@@ -31,11 +31,23 @@
 
 ### 投稿の承認・却下
 
-1. `submissions` シートを開き、`status` が `pending` の行を確認します。
-2. 対象の行を選択します (複数行可)。
-3. 「共有辞書管理」→「選択行を承認」または「選択行を却下」を実行します。
+承認方法は2つあり、どちらでも同じ処理が行われます。
 
-承認すると `dictionary` シートへ転記され、辞書バージョンが自動で上がり、利用者の次回取得から反映されます。`pending` 以外の行は自動でスキップされます。
+**方法1: statusセルを直接変更 (推奨)**
+
+`submissions` シートの `status` セルをプルダウンで `approved` または `rejected` に変えるだけで、自動的に処理されます (`setupSharedDictionary` が設置するonEditトリガーが実行します)。
+
+**方法2: メニューから一括処理**
+
+1. `submissions` シートで対象の行を選択します (複数行可)。
+2. 「共有辞書管理」→「選択行を承認」または「選択行を却下」を実行します。
+
+承認時の処理は投稿の `type` によって異なります。
+
+- `add` (追加申請): `dictionary` シートへ転記されます
+- `remove` (削除申請): `dictionary` シートから該当単語の行が削除されます
+
+いずれも辞書バージョンが自動で上がり、利用者の次回取得から反映されます。処理済みの行 (`reviewedAt` が入っている行) は二重処理されずスキップされます。
 
 ### 迷惑な投稿者のブロック
 
@@ -75,14 +87,22 @@
 
 ### POST (本文はJSON)
 
+追加申請:
+
 ```json
-{"action":"submit","word":"GitHub","reading":"ギットハブ","category":"IT","authorName":"alice","token":"…"}
+{"action":"submit","type":"add","word":"GitHub","reading":"ギットハブ","category":"IT","authorName":"alice","token":"…"}
+```
+
+削除申請 (プラグインの「共有忘却」コマンドから送信されます):
+
+```json
+{"action":"submit","type":"remove","word":"GitHub","token":"…"}
 ```
 
 成功時は `{"ok":true,"submissionId":"…","status":"pending"}`。
 拒否時は `{"ok":false,"code":"DUPLICATE"}` のように理由コードを返します。
 
-主な拒否コード: `DUPLICATE` (辞書または承認待ちに同一単語)、`RATE_LIMITED`、`QUEUE_FULL`、`BLOCKED`、`INVALID_WORD` / `INVALID_READING` / `INVALID_CATEGORY` / `INVALID_AUTHOR` (空・文字数超過・禁止文字)、`INVALID_TOKEN`、`BUSY` (ロック取得失敗)。
+主な拒否コード: `DUPLICATE` (追加: 辞書または承認待ちに同一単語 / 削除: 同一単語の削除申請が承認待ち)、`NOT_FOUND` (削除対象が辞書にない)、`RATE_LIMITED`、`QUEUE_FULL`、`BLOCKED`、`INVALID_WORD` / `INVALID_READING` / `INVALID_CATEGORY` / `INVALID_AUTHOR` (空・文字数超過・禁止文字)、`INVALID_TOKEN`、`BUSY` (ロック取得失敗)。
 
 ## 制限値 (プラグイン側と共通)
 

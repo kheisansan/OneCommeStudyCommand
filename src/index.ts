@@ -4,7 +4,9 @@ import { applyDictionary, applyDictionaryWithMaskedFallback } from "./replacer";
 import {
   importSharedEntries,
   isValidSharedEndpointUrl,
-  validateSharedSubmission
+  sanitizeSharedAuthorName,
+  validateSharedSubmission,
+  type SharedSubmissionInput
 } from "./sharedDictionary";
 import {
   fetchOwnSubmissions,
@@ -31,7 +33,13 @@ import {
   MAX_STUDY_DICTIONARY_BODY_LENGTH,
   STUDY_DICTIONARY_FILE_NAME
 } from "./studyDictionaryImport";
-import type { DictionaryFile, PluginSettings, StoreLike } from "./types";
+import type {
+  DictionaryFile,
+  PluginSettings,
+  SharedForgetCommand,
+  SharedTeachCommand,
+  StoreLike
+} from "./types";
 import { normalizeDictionaryWord } from "./wordNormalizer";
 import { IS_PRERELEASE, PLUGIN_VERSION } from "./version";
 
@@ -73,7 +81,9 @@ const PLUGIN_UID = "games.tang-chao.study-command";
 const SETTINGS_STORE_KEY = "settings";
 const DEFAULT_SETTINGS: PluginSettings = {
   educationCommandEnabled: true,
-  forgetCommandEnabled: true
+  forgetCommandEnabled: true,
+  sharedEducationCommandEnabled: true,
+  sharedForgetCommandEnabled: true
 };
 
 let repository: StoreDictionaryRepository | null = null;
@@ -111,6 +121,10 @@ const plugin = {
     const command = parseEducationCommand(commandInput.text);
     if (!command) return comment;
     if (!isCommandEnabled(command.type)) return comment;
+
+    if (command.type === "sharedTeach" || command.type === "sharedForget") {
+      return handleSharedCommand(comment, command, userData);
+    }
 
     const currentDictionary = ensureDictionary();
     logPrereleaseCommandDiagnostic(comment, commandInput, command, currentDictionary);
@@ -405,16 +419,13 @@ function normalizeSettings(value: unknown): PluginSettings | null {
   if (!value || typeof value !== "object") return null;
 
   const candidate = value as Partial<PluginSettings>;
-  if (
-    candidate.educationCommandEnabled !== undefined &&
-    typeof candidate.educationCommandEnabled !== "boolean"
-  ) {
-    return null;
-  }
-  if (
-    candidate.forgetCommandEnabled !== undefined &&
-    typeof candidate.forgetCommandEnabled !== "boolean"
-  ) {
+  const flags = [
+    candidate.educationCommandEnabled,
+    candidate.forgetCommandEnabled,
+    candidate.sharedEducationCommandEnabled,
+    candidate.sharedForgetCommandEnabled
+  ];
+  if (flags.some((flag) => flag !== undefined && typeof flag !== "boolean")) {
     return null;
   }
 
@@ -422,13 +433,19 @@ function normalizeSettings(value: unknown): PluginSettings | null {
     educationCommandEnabled:
       candidate.educationCommandEnabled ?? DEFAULT_SETTINGS.educationCommandEnabled,
     forgetCommandEnabled:
-      candidate.forgetCommandEnabled ?? DEFAULT_SETTINGS.forgetCommandEnabled
+      candidate.forgetCommandEnabled ?? DEFAULT_SETTINGS.forgetCommandEnabled,
+    sharedEducationCommandEnabled:
+      candidate.sharedEducationCommandEnabled ?? DEFAULT_SETTINGS.sharedEducationCommandEnabled,
+    sharedForgetCommandEnabled:
+      candidate.sharedForgetCommandEnabled ?? DEFAULT_SETTINGS.sharedForgetCommandEnabled
   };
 }
 
 function isCommandEnabled(commandType: string): boolean {
   if (commandType === "teach") return settings.educationCommandEnabled;
   if (commandType === "forget") return settings.forgetCommandEnabled;
+  if (commandType === "sharedTeach") return settings.sharedEducationCommandEnabled;
+  if (commandType === "sharedForget") return settings.sharedForgetCommandEnabled;
   return true;
 }
 
@@ -553,6 +570,91 @@ function deleteDictionaryEntry(value: unknown): PluginResponseLike {
       dictionary
     }
   };
+}
+
+function handleSharedCommand(
+  comment: CommentLike,
+  command: SharedTeachCommand | SharedForgetCommand,
+  userData: UserDataLike
+): CommentLike | false {
+  const store = pluginStore;
+  if (!store) return comment;
+
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return setFeedbackText(comment, "共有辞書が設定されていません。");
+  }
+
+  const authorName = sanitizeSharedAuthorName(getUserName(userData));
+  const validation =
+    command.type === "sharedTeach"
+      ? validateSharedSubmission(
+          { word: command.word, reading: command.reading, authorName },
+          "add"
+        )
+      : validateSharedSubmission({ word: command.word, reading: "", authorName }, "remove");
+  if (!validation.ok) {
+    console.info(
+      `[OneCommeStudyCommand] shared command rejected locally: ${validation.errors.join(",")}`
+    );
+    return setFeedbackText(comment, "共有辞書へ申請できない内容です。");
+  }
+
+  // ローカル辞書へも同じ操作を反映する
+  const handled = handleEducationCommand(
+    ensureDictionary(),
+    command.type === "sharedTeach"
+      ? { type: "teach", word: command.word, reading: command.reading }
+      : { type: "forget", word: command.word },
+    { createdBy: getUserName(userData) }
+  );
+  dictionary = handled.dictionary;
+  repository?.save(handled.dictionary);
+  console.info(`[OneCommeStudyCommand] ${handled.result.message}`);
+
+  startSharedSubmission(store, endpointUrl, validation.submission);
+
+  const sharedNote =
+    command.type === "sharedTeach"
+      ? "共有辞書へも申請しました。"
+      : "共有辞書からの削除も申請しました。";
+  const speech = handled.result.speechText
+    ? `${handled.result.speechText} ${sharedNote}`
+    : `${validation.submission.word} の削除を共有辞書へ申請しました。`;
+  return setFeedbackText(comment, speech);
+}
+
+function startSharedSubmission(
+  store: StoreLike,
+  endpointUrl: string,
+  submission: SharedSubmissionInput
+): void {
+  const token = ensureSharedToken(store);
+  // 読み上げを止めないため結果を待たない。結果は投稿状況の更新で確認できる
+  submitSharedEntry(endpointUrl, submission, token)
+    .then((outcome) => {
+      if (outcome.ok) {
+        recordSubmission(store, {
+          submissionId: outcome.submissionId,
+          type: submission.type,
+          word: submission.word,
+          reading: submission.reading,
+          category: submission.category,
+          status: "pending",
+          submittedAt: new Date().toISOString()
+        });
+        console.info(
+          `[OneCommeStudyCommand] shared submission accepted: ${submission.type} ${submission.word}`
+        );
+      } else {
+        console.warn(
+          `[OneCommeStudyCommand] shared submission rejected: ${outcome.code} ${outcome.serverCode ?? ""}`
+        );
+      }
+    })
+    .catch((error) => {
+      console.warn("[OneCommeStudyCommand] shared submission failed", error);
+    });
 }
 
 function buildSharedDictionaryState(store: StoreLike) {
@@ -711,6 +813,7 @@ async function submitSharedDictionaryEntry(
 
   recordSubmission(store, {
     submissionId: outcome.submissionId,
+    type: validation.submission.type,
     word: validation.submission.word,
     reading: validation.submission.reading,
     category: validation.submission.category,

@@ -9,6 +9,8 @@ const reloadButton = document.getElementById("reloadButton");
 const saveSettingsButton = document.getElementById("saveSettingsButton");
 const educationCommandEnabled = document.getElementById("educationCommandEnabled");
 const forgetCommandEnabled = document.getElementById("forgetCommandEnabled");
+const sharedEducationCommandEnabled = document.getElementById("sharedEducationCommandEnabled");
+const sharedForgetCommandEnabled = document.getElementById("sharedForgetCommandEnabled");
 const settingsState = document.getElementById("settingsState");
 const addEntryForm = document.getElementById("addEntryForm");
 const addEntryButton = document.getElementById("addEntryButton");
@@ -52,6 +54,8 @@ reloadButton.addEventListener("click", loadManagementData);
 saveSettingsButton.addEventListener("click", saveSettings);
 educationCommandEnabled.addEventListener("change", updateCurrentSettings);
 forgetCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedEducationCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedForgetCommandEnabled.addEventListener("change", updateCurrentSettings);
 addEntryForm.addEventListener("submit", (event) => {
   event.preventDefault();
   addEntry();
@@ -600,7 +604,7 @@ function renderSharedSubmissions() {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.className = "empty";
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.textContent = "投稿はありません";
     row.append(cell);
     sharedSubmissionsBody.append(row);
@@ -613,8 +617,9 @@ function renderSharedSubmissions() {
     statusCell.textContent = sharedApi.submissionStatusLabel(submission.status);
     statusCell.className = `shared-status-${submission.status}`;
     row.append(
+      createCell(sharedApi.submissionTypeLabel(submission.type)),
       createCell(submission.word),
-      createCell(submission.reading),
+      createCell(submission.reading || "-"),
       createCell(submission.category || "-"),
       statusCell,
       createCell(formatDate(submission.submittedAt))
@@ -653,6 +658,8 @@ function renderSettings() {
   if (!state.currentSettings) return;
   educationCommandEnabled.checked = state.currentSettings.educationCommandEnabled;
   forgetCommandEnabled.checked = state.currentSettings.forgetCommandEnabled;
+  sharedEducationCommandEnabled.checked = state.currentSettings.sharedEducationCommandEnabled;
+  sharedForgetCommandEnabled.checked = state.currentSettings.sharedForgetCommandEnabled;
   updateSettingsState();
 }
 
@@ -780,7 +787,9 @@ function createActionsCell(entry) {
 function updateCurrentSettings() {
   state = stateApi.setCurrentSettings(state, {
     educationCommandEnabled: educationCommandEnabled.checked,
-    forgetCommandEnabled: forgetCommandEnabled.checked
+    forgetCommandEnabled: forgetCommandEnabled.checked,
+    sharedEducationCommandEnabled: sharedEducationCommandEnabled.checked,
+    sharedForgetCommandEnabled: sharedForgetCommandEnabled.checked
   });
   updateSettingsState();
   updateControls();
@@ -800,6 +809,8 @@ function updateControls() {
   saveSettingsButton.disabled = locked || !stateApi.isSettingsDirty(state);
   educationCommandEnabled.disabled = locked;
   forgetCommandEnabled.disabled = locked;
+  sharedEducationCommandEnabled.disabled = locked;
+  sharedForgetCommandEnabled.disabled = locked;
   entryWord.disabled = locked;
   entryReading.disabled = locked;
   addEntryButton.disabled = locked;

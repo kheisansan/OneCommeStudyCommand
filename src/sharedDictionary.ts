@@ -36,8 +36,11 @@ export type SharedDictionarySettings = {
 
 export type SharedSubmissionStatus = "pending" | "approved" | "rejected";
 
+export type SharedSubmissionType = "add" | "remove";
+
 export type SharedSubmissionRecord = {
   submissionId: string;
+  type: SharedSubmissionType;
   word: string;
   reading: string;
   category: string;
@@ -55,6 +58,7 @@ export type SharedSubmissionErrorCode =
   | "FORBIDDEN_CHARACTER";
 
 export type SharedSubmissionInput = {
+  type: SharedSubmissionType;
   word: string;
   reading: string;
   category: string;
@@ -65,12 +69,15 @@ export type SharedSubmissionValidation =
   | { ok: true; submission: SharedSubmissionInput }
   | { ok: false; errors: SharedSubmissionErrorCode[] };
 
-export function validateSharedSubmission(input: {
-  word: unknown;
-  reading: unknown;
-  category?: unknown;
-  authorName?: unknown;
-}): SharedSubmissionValidation {
+export function validateSharedSubmission(
+  input: {
+    word: unknown;
+    reading: unknown;
+    category?: unknown;
+    authorName?: unknown;
+  },
+  type: SharedSubmissionType = "add"
+): SharedSubmissionValidation {
   const errors: SharedSubmissionErrorCode[] = [];
   const rawWord = typeof input.word === "string" ? input.word : "";
   const rawReading = typeof input.reading === "string" ? input.reading : "";
@@ -86,15 +93,18 @@ export function validateSharedSubmission(input: {
   }
 
   const word = normalizeDictionaryWord(rawWord);
-  const reading = rawReading.trim();
+  // 削除申請は単語だけを送る
+  const reading = type === "remove" ? "" : rawReading.trim();
   const category = collapseWhitespace(rawCategory);
   const authorName = collapseWhitespace(rawAuthor);
 
   if (word.length === 0) errors.push("EMPTY_WORD");
   if (codePointLength(word) > MAX_SHARED_WORD_CODE_POINTS) errors.push("WORD_TOO_LONG");
-  if (reading.length === 0) errors.push("EMPTY_READING");
-  if (codePointLength(reading) > MAX_SHARED_READING_CODE_POINTS) {
-    errors.push("READING_TOO_LONG");
+  if (type === "add") {
+    if (reading.length === 0) errors.push("EMPTY_READING");
+    if (codePointLength(reading) > MAX_SHARED_READING_CODE_POINTS) {
+      errors.push("READING_TOO_LONG");
+    }
   }
   if (codePointLength(category) > MAX_SHARED_CATEGORY_CODE_POINTS) {
     errors.push("CATEGORY_TOO_LONG");
@@ -104,7 +114,17 @@ export function validateSharedSubmission(input: {
   }
 
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, submission: { word, reading, category, authorName } };
+  return { ok: true, submission: { type, word, reading, category, authorName } };
+}
+
+/** チャット由来の投稿者名を共有辞書の制限に収まる形へ丸める */
+export function sanitizeSharedAuthorName(value: string | undefined): string {
+  if (!value) return "";
+  const cleaned = collapseWhitespace(value.replace(
+    new RegExp(SHARED_FORBIDDEN_CHARACTERS.source, "gu"),
+    ""
+  ));
+  return Array.from(cleaned).slice(0, MAX_SHARED_AUTHOR_CODE_POINTS).join("");
 }
 
 export type SharedDictionaryFetchPayload = {
@@ -212,8 +232,10 @@ export function parseSharedSubmissionsResponse(
     }
     if (typeof record.word !== "string" || typeof record.reading !== "string") return null;
     if (!isSubmissionStatus(record.status)) return null;
+    if (record.type !== undefined && !isSubmissionType(record.type)) return null;
     records.push({
       submissionId: record.submissionId,
+      type: isSubmissionType(record.type) ? record.type : "add",
       word: record.word,
       reading: record.reading,
       category: typeof record.category === "string" ? record.category : "",
@@ -226,6 +248,10 @@ export function parseSharedSubmissionsResponse(
 
 function isSubmissionStatus(value: unknown): value is SharedSubmissionStatus {
   return value === "pending" || value === "approved" || value === "rejected";
+}
+
+export function isSubmissionType(value: unknown): value is SharedSubmissionType {
+  return value === "add" || value === "remove";
 }
 
 export type SharedImportResult = {

@@ -264,3 +264,170 @@ test("GET exposes the shared dictionary state", async () => {
   });
   plugin.destroy();
 });
+
+function waitForAsyncSubmission(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+test("shared teach command teaches locally and submits to the shared dictionary", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  let postedBody: Record<string, unknown> | null = null;
+  await withFetchStub(
+    (_url, init) => {
+      postedBody = JSON.parse(init?.body ?? "{}");
+      return { ok: true, submissionId: "cmd-1" };
+    },
+    async () => {
+      const filteredComment = plugin.filterComment(
+        {
+          data: {
+            comment: "共有教育(GitHub=ギットハブ)",
+            speechText: "共有教育(GitHub=ギットハブ)"
+          }
+        },
+        null,
+        { name: "alice" }
+      );
+
+      assert.notEqual(filteredComment, false);
+      assert.equal(
+        filteredComment.data?.speechText,
+        "github は ギットハブ を覚えました。 共有辞書へも申請しました。"
+      );
+      await waitForAsyncSubmission();
+    }
+  );
+
+  assert.notEqual(postedBody, null);
+  assert.equal(postedBody!.type, "add");
+  assert.equal(postedBody!.word, "github");
+  assert.equal(postedBody!.reading, "ギットハブ");
+  assert.equal(postedBody!.authorName, "alice");
+
+  const state = plugin.request({ method: "GET" });
+  assert.equal(state.response.dictionary.entries[0].word, "github");
+  assert.equal(state.response.sharedDictionary.submissions[0].submissionId, "cmd-1");
+  assert.equal(state.response.sharedDictionary.submissions[0].type, "add");
+  plugin.destroy();
+});
+
+test("shared forget command forgets locally and submits a removal request", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  plugin.request({ method: "PUT", body: { word: "GitHub", reading: "ギットハブ" } });
+
+  let postedBody: Record<string, unknown> | null = null;
+  await withFetchStub(
+    (_url, init) => {
+      postedBody = JSON.parse(init?.body ?? "{}");
+      return { ok: true, submissionId: "cmd-2" };
+    },
+    async () => {
+      const filteredComment = plugin.filterComment(
+        {
+          data: {
+            comment: "共有忘却(GitHub)",
+            speechText: "共有忘却(GitHub)"
+          }
+        },
+        null,
+        { name: "alice" }
+      );
+
+      assert.notEqual(filteredComment, false);
+      assert.equal(
+        filteredComment.data?.speechText,
+        "ギットハブ を忘れました。 共有辞書からの削除も申請しました。"
+      );
+      await waitForAsyncSubmission();
+    }
+  );
+
+  assert.notEqual(postedBody, null);
+  assert.equal(postedBody!.type, "remove");
+  assert.equal(postedBody!.word, "github");
+  assert.equal(postedBody!.reading, "");
+
+  const state = plugin.request({ method: "GET" });
+  assert.equal(state.response.dictionary.entries.length, 0);
+  assert.equal(state.response.sharedDictionary.submissions[0].type, "remove");
+  plugin.destroy();
+});
+
+test("shared forget command submits removal even when the word is not local", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  await withFetchStub(
+    () => ({ ok: true, submissionId: "cmd-3" }),
+    async () => {
+      const filteredComment = plugin.filterComment(
+        {
+          data: {
+            comment: "共有忘却(GitHub)",
+            speechText: "共有忘却(GitHub)"
+          }
+        },
+        null,
+        null
+      );
+
+      assert.notEqual(filteredComment, false);
+      assert.equal(
+        filteredComment.data?.speechText,
+        "github の削除を共有辞書へ申請しました。"
+      );
+      await waitForAsyncSubmission();
+    }
+  );
+  plugin.destroy();
+});
+
+test("shared commands report a missing configuration", () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+
+  const filteredComment = plugin.filterComment(
+    {
+      data: {
+        comment: "共有教育(GitHub=ギットハブ)",
+        speechText: "共有教育(GitHub=ギットハブ)"
+      }
+    },
+    null,
+    { name: "alice" }
+  );
+
+  assert.notEqual(filteredComment, false);
+  assert.equal(filteredComment.data?.speechText, "共有辞書が設定されていません。");
+  const state = plugin.request({ method: "GET" });
+  assert.equal(state.response.dictionary.entries.length, 0);
+  plugin.destroy();
+});
+
+test("shared commands can be disabled via settings", async () => {
+  const store = new MemoryStore();
+  store.set("settings", {
+    educationCommandEnabled: true,
+    forgetCommandEnabled: true,
+    sharedEducationCommandEnabled: false,
+    sharedForgetCommandEnabled: false
+  });
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+
+  const comment = {
+    data: {
+      comment: "共有教育(GitHub=ギットハブ)",
+      speechText: "共有教育(GitHub=ギットハブ)"
+    }
+  };
+  const filteredComment = plugin.filterComment(comment, null, { name: "alice" });
+  assert.equal(filteredComment, comment);
+  plugin.destroy();
+});

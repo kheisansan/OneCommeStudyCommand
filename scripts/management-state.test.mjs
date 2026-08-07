@@ -166,7 +166,12 @@ test("send only one locked request and always release the lock", async () => {
 });
 
 function settings(educationCommandEnabled, forgetCommandEnabled) {
-  return { educationCommandEnabled, forgetCommandEnabled };
+  return {
+    educationCommandEnabled,
+    forgetCommandEnabled,
+    sharedEducationCommandEnabled: false,
+    sharedForgetCommandEnabled: false
+  };
 }
 
 function entry(word, priority, updatedAt = "2026-07-01T00:00:00.000Z") {

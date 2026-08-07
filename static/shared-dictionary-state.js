@@ -85,12 +85,18 @@
     return labels[status] || status;
   }
 
+  function submissionTypeLabel(type) {
+    if (type === "remove") return "削除";
+    return "追加";
+  }
+
   function sharedErrorMessage(sharedError) {
     if (!sharedError || typeof sharedError !== "object") return "エラーが発生しました。";
 
     if (sharedError.code === "SERVER_REJECTED") {
       const serverMessages = {
         DUPLICATE: "同じ単語がすでに登録または承認待ちです。",
+        NOT_FOUND: "その単語は共有辞書に登録されていません。",
         BLOCKED: "この利用者からの投稿は受け付けられていません。",
         RATE_LIMITED: "投稿回数の上限に達しました。時間をおいて再度お試しください。",
         QUEUE_FULL: "承認待ちが上限に達しています。時間をおいて再度お試しください。",
@@ -143,6 +149,7 @@
     setAllSelected,
     sharedErrorMessage,
     submissionStatusLabel,
+    submissionTypeLabel,
     toggleSelected
   };
 });

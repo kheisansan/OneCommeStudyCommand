@@ -93,7 +93,7 @@ test("submitSharedEntry posts JSON as text/plain and returns the submission id",
 
   const outcome = await submitSharedEntry(
     ENDPOINT,
-    { word: "github", reading: "ギットハブ", category: "IT", authorName: "alice" },
+    { type: "add", word: "github", reading: "ギットハブ", category: "IT", authorName: "alice" },
     "token-1",
     fetchImpl
   );
@@ -103,6 +103,7 @@ test("submitSharedEntry posts JSON as text/plain and returns the submission id",
   assert.equal(requestInit?.headers?.["Content-Type"], "text/plain;charset=utf-8");
   assert.deepEqual(JSON.parse(requestInit?.body ?? "{}"), {
     action: "submit",
+    type: "add",
     word: "github",
     reading: "ギットハブ",
     category: "IT",
@@ -114,7 +115,7 @@ test("submitSharedEntry posts JSON as text/plain and returns the submission id",
 test("submitSharedEntry passes through server rejection codes", async () => {
   const outcome = await submitSharedEntry(
     ENDPOINT,
-    { word: "github", reading: "ギットハブ", category: "", authorName: "" },
+    { type: "add", word: "github", reading: "ギットハブ", category: "", authorName: "" },
     "token-1",
     async () => jsonResponse({ ok: false, code: "DUPLICATE" })
   );

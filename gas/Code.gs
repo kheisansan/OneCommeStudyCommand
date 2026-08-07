@@ -18,6 +18,7 @@ var SHEET_SETTINGS = "settings";
 var DICTIONARY_HEADERS = ["id", "word", "reading", "category", "author", "enabled", "updatedAt"];
 var SUBMISSION_HEADERS = [
   "submissionId",
+  "type",
   "word",
   "reading",
   "category",
@@ -27,6 +28,18 @@ var SUBMISSION_HEADERS = [
   "createdAt",
   "reviewedAt"
 ];
+
+// SUBMISSION_HEADERS の0始まり列番号
+var SUB_ID = 0;
+var SUB_TYPE = 1;
+var SUB_WORD = 2;
+var SUB_READING = 3;
+var SUB_CATEGORY = 4;
+var SUB_AUTHOR = 5;
+var SUB_TOKEN = 6;
+var SUB_STATUS = 7;
+var SUB_CREATED_AT = 8;
+var SUB_REVIEWED_AT = 9;
 var BLOCKED_HEADERS = ["token", "note", "blockedAt"];
 var SETTINGS_HEADERS = ["key", "value"];
 
@@ -72,7 +85,7 @@ function setupSharedDictionary() {
   ensureSettingValue_(settings, "maxSubmissionsPerHour", DEFAULT_MAX_SUBMISSIONS_PER_HOUR);
   ensureSettingValue_(settings, "maxPendingTotal", DEFAULT_MAX_PENDING_TOTAL);
 
-  var statusColumn = SUBMISSION_HEADERS.indexOf("status") + 1;
+  var statusColumn = SUB_STATUS + 1;
   var statusRange = submissions.getRange(2, statusColumn, submissions.getMaxRows() - 1, 1);
   var rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(["pending", "approved", "rejected"], true)
@@ -80,7 +93,66 @@ function setupSharedDictionary() {
     .build();
   statusRange.setDataValidation(rule);
 
+  ensureStatusEditTrigger_();
+
   SpreadsheetApp.getActiveSpreadsheet().toast("共有辞書のシートを初期化しました", "共有辞書管理");
+}
+
+/**
+ * submissionsシートのstatusセルを直接 approved / rejected に変えたときに
+ * 承認・却下処理を自動実行するためのトリガーを設置する。
+ */
+function ensureStatusEditTrigger_() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var index = 0; index < triggers.length; index += 1) {
+    if (triggers[index].getHandlerFunction() === "onSubmissionStatusEdit") return;
+  }
+  ScriptApp.newTrigger("onSubmissionStatusEdit")
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+}
+
+function onSubmissionStatusEdit(e) {
+  if (!e || !e.range) return;
+  var sheet = e.range.getSheet();
+  if (sheet.getName() !== SHEET_SUBMISSIONS) return;
+  if (e.range.getColumn() !== SUB_STATUS + 1 || e.range.getNumColumns() !== 1) return;
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var dictionary = spreadsheet.getSheetByName(SHEET_DICTIONARY);
+  if (!dictionary) return;
+
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (error) {
+    spreadsheet.toast("処理が混み合っています。もう一度お試しください。", "共有辞書管理");
+    return;
+  }
+
+  try {
+    var approvedCount = 0;
+    var reviewedCount = 0;
+    for (var row = e.range.getRow(); row <= e.range.getLastRow(); row += 1) {
+      if (row <= 1) continue;
+      var status = String(sheet.getRange(row, SUB_STATUS + 1).getValue());
+      if (status !== "approved" && status !== "rejected") continue;
+      var result = processReviewRow_(sheet, dictionary, row, status);
+      if (result === "reviewed") {
+        reviewedCount += 1;
+        if (status === "approved") approvedCount += 1;
+      }
+    }
+    if (approvedCount > 0) {
+      bumpDictionaryVersion_();
+    }
+    if (reviewedCount > 0) {
+      spreadsheet.toast("処理しました: " + reviewedCount + "件", "共有辞書管理");
+    }
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function ensureSheet_(spreadsheet, name, headers) {
@@ -193,14 +265,15 @@ function handleGetSubmissions_(e) {
     var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, SUBMISSION_HEADERS.length).getValues();
     for (var row = values.length - 1; row >= 0 && submissions.length < MAX_SUBMISSION_RECORDS; row -= 1) {
       var record = values[row];
-      if (String(record[5]) !== token) continue;
+      if (String(record[SUB_TOKEN]) !== token) continue;
       submissions.push({
-        submissionId: String(record[0]),
-        word: String(record[1]),
-        reading: String(record[2]),
-        category: String(record[3] || ""),
-        status: String(record[6]),
-        createdAt: formatTimestamp_(record[7])
+        submissionId: String(record[SUB_ID]),
+        type: record[SUB_TYPE] === "remove" ? "remove" : "add",
+        word: String(record[SUB_WORD]),
+        reading: String(record[SUB_READING]),
+        category: String(record[SUB_CATEGORY] || ""),
+        status: String(record[SUB_STATUS]),
+        createdAt: formatTimestamp_(record[SUB_CREATED_AT])
       });
     }
   }
@@ -239,17 +312,29 @@ function handleSubmit_(body) {
       return jsonOutput_({ ok: false, code: "NOT_INITIALIZED" });
     }
 
-    var pendingWords = collectPendingWords_(submissions);
-    if (pendingWords.count >= readSettingNumber_("maxPendingTotal", DEFAULT_MAX_PENDING_TOTAL)) {
+    var pending = collectPendingSubmissions_(submissions);
+    if (pending.count >= readSettingNumber_("maxPendingTotal", DEFAULT_MAX_PENDING_TOTAL)) {
       return jsonOutput_({ ok: false, code: "QUEUE_FULL" });
     }
-    if (pendingWords.words[validated.word] || isWordInDictionary_(validated.word)) {
-      return jsonOutput_({ ok: false, code: "DUPLICATE" });
+
+    var inDictionary = isWordInDictionary_(validated.word);
+    if (validated.type === "add") {
+      if (pending.addWords[validated.word] || inDictionary) {
+        return jsonOutput_({ ok: false, code: "DUPLICATE" });
+      }
+    } else {
+      if (!inDictionary) {
+        return jsonOutput_({ ok: false, code: "NOT_FOUND" });
+      }
+      if (pending.removeWords[validated.word]) {
+        return jsonOutput_({ ok: false, code: "DUPLICATE" });
+      }
     }
 
     var submissionId = Utilities.getUuid();
     submissions.appendRow([
       submissionId,
+      validated.type,
       validated.word,
       validated.reading,
       validated.category,
@@ -267,6 +352,9 @@ function handleSubmit_(body) {
 }
 
 function validateSubmission_(body) {
+  var type = body.type === "remove" ? "remove" : body.type === "add" || body.type === undefined ? "add" : null;
+  if (type === null) return { code: "INVALID_BODY" };
+
   var rawWord = typeof body.word === "string" ? body.word : "";
   var rawReading = typeof body.reading === "string" ? body.reading : "";
   var rawCategory = typeof body.category === "string" ? body.category : "";
@@ -278,14 +366,14 @@ function validateSubmission_(body) {
   if (FORBIDDEN_CHARACTERS.test(rawAuthor)) return { code: "INVALID_AUTHOR" };
 
   var word = normalizeDictionaryWord_(rawWord);
-  var reading = rawReading.trim();
+  var reading = type === "remove" ? "" : rawReading.trim();
   var category = collapseWhitespace_(rawCategory);
   var authorName = collapseWhitespace_(rawAuthor);
 
   if (word === "" || codePointLength_(word) > MAX_WORD_CODE_POINTS) {
     return { code: "INVALID_WORD" };
   }
-  if (reading === "" || codePointLength_(reading) > MAX_READING_CODE_POINTS) {
+  if (type === "add" && (reading === "" || codePointLength_(reading) > MAX_READING_CODE_POINTS)) {
     return { code: "INVALID_READING" };
   }
   if (codePointLength_(category) > MAX_CATEGORY_CODE_POINTS) {
@@ -295,23 +383,29 @@ function validateSubmission_(body) {
     return { code: "INVALID_AUTHOR" };
   }
 
-  return { word: word, reading: reading, category: category, authorName: authorName };
+  return { type: type, word: word, reading: reading, category: category, authorName: authorName };
 }
 
-function collectPendingWords_(submissions) {
-  var words = {};
+function collectPendingSubmissions_(submissions) {
+  var addWords = {};
+  var removeWords = {};
   var count = 0;
   if (submissions.getLastRow() > 1) {
     var values = submissions
       .getRange(2, 1, submissions.getLastRow() - 1, SUBMISSION_HEADERS.length)
       .getValues();
     for (var row = 0; row < values.length; row += 1) {
-      if (String(values[row][6]) !== "pending") continue;
+      if (String(values[row][SUB_STATUS]) !== "pending") continue;
       count += 1;
-      words[normalizeDictionaryWord_(String(values[row][1]))] = true;
+      var word = normalizeDictionaryWord_(String(values[row][SUB_WORD]));
+      if (values[row][SUB_TYPE] === "remove") {
+        removeWords[word] = true;
+      } else {
+        addWords[word] = true;
+      }
     }
   }
-  return { words: words, count: count };
+  return { addWords: addWords, removeWords: removeWords, count: count };
 }
 
 function isWordInDictionary_(word) {
@@ -372,33 +466,16 @@ function reviewSelectedSubmissions_(nextStatus) {
     return;
   }
 
-  var now = new Date().toISOString();
   var reviewed = 0;
   var skipped = 0;
 
   for (var index = 0; index < selection.rows.length; index += 1) {
-    var rowNumber = selection.rows[index];
-    var record = submissions
-      .getRange(rowNumber, 1, 1, SUBMISSION_HEADERS.length)
-      .getValues()[0];
-    if (String(record[6]) !== "pending") {
+    var result = processReviewRow_(submissions, dictionary, selection.rows[index], nextStatus);
+    if (result === "reviewed") {
+      reviewed += 1;
+    } else {
       skipped += 1;
-      continue;
     }
-
-    if (nextStatus === "approved") {
-      dictionary.appendRow([
-        String(record[0]),
-        normalizeDictionaryWord_(String(record[1])),
-        String(record[2]),
-        String(record[3] || ""),
-        String(record[4] || ""),
-        true,
-        now
-      ]);
-    }
-    submissions.getRange(rowNumber, 7, 1, 3).setValues([[nextStatus, formatTimestamp_(record[7]), now]]);
-    reviewed += 1;
   }
 
   if (reviewed > 0 && nextStatus === "approved") {
@@ -406,7 +483,56 @@ function reviewSelectedSubmissions_(nextStatus) {
   }
 
   var statusLabel = nextStatus === "approved" ? "承認" : "却下";
-  ui.alert(statusLabel + ": " + reviewed + "件 / スキップ (pending以外): " + skipped + "件");
+  ui.alert(statusLabel + ": " + reviewed + "件 / スキップ (処理済み): " + skipped + "件");
+}
+
+/**
+ * 1件の申請を処理する。処理済み (reviewedAtあり) の行はスキップする。
+ * 承認時: type=add は辞書へ追加、type=remove は辞書から該当単語の行を削除する。
+ */
+function processReviewRow_(submissions, dictionary, rowNumber, nextStatus) {
+  var record = submissions
+    .getRange(rowNumber, 1, 1, SUBMISSION_HEADERS.length)
+    .getValues()[0];
+  if (String(record[SUB_REVIEWED_AT] || "") !== "") {
+    return "skipped";
+  }
+
+  var now = new Date().toISOString();
+  var word = normalizeDictionaryWord_(String(record[SUB_WORD]));
+
+  if (nextStatus === "approved") {
+    if (record[SUB_TYPE] === "remove") {
+      removeDictionaryRows_(dictionary, word);
+    } else {
+      dictionary.appendRow([
+        String(record[SUB_ID]),
+        word,
+        String(record[SUB_READING]),
+        String(record[SUB_CATEGORY] || ""),
+        String(record[SUB_AUTHOR] || ""),
+        true,
+        now
+      ]);
+    }
+  }
+
+  submissions.getRange(rowNumber, SUB_STATUS + 1).setValue(nextStatus);
+  submissions.getRange(rowNumber, SUB_REVIEWED_AT + 1).setValue(now);
+  return "reviewed";
+}
+
+function removeDictionaryRows_(dictionary, word) {
+  if (dictionary.getLastRow() <= 1) return 0;
+  var values = dictionary.getRange(2, 2, dictionary.getLastRow() - 1, 1).getValues();
+  var removed = 0;
+  for (var row = values.length - 1; row >= 0; row -= 1) {
+    if (normalizeDictionaryWord_(String(values[row][0])) === word) {
+      dictionary.deleteRow(row + 2);
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 function blockSelectedSubmitters() {
@@ -427,9 +553,9 @@ function blockSelectedSubmitters() {
     var record = selection.sheet
       .getRange(selection.rows[index], 1, 1, SUBMISSION_HEADERS.length)
       .getValues()[0];
-    var token = String(record[5]);
+    var token = String(record[SUB_TOKEN]);
     if (!token || isTokenBlocked_(token)) continue;
-    blocked.appendRow([token, "submission: " + String(record[0]), now]);
+    blocked.appendRow([token, "submission: " + String(record[SUB_ID]), now]);
     added += 1;
   }
   ui.alert("ブロックした投稿者: " + added + "件");

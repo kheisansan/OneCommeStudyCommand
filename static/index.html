@@ -25,6 +25,14 @@
           <input id="forgetCommandEnabled" type="checkbox">
           <span>忘却コマンド</span>
         </label>
+        <label class="toggle">
+          <input id="sharedEducationCommandEnabled" type="checkbox">
+          <span>共有教育コマンド</span>
+        </label>
+        <label class="toggle">
+          <input id="sharedForgetCommandEnabled" type="checkbox">
+          <span>共有忘却コマンド</span>
+        </label>
         <span id="settingsState" class="settings-state settings-state-saved">保存済み</span>
         <button id="saveSettingsButton" class="settings-save" type="button">保存</button>
       </section>
@@ -127,6 +135,7 @@
               <table>
                 <thead>
                   <tr>
+                    <th>種別</th>
                     <th>単語</th>
                     <th>読み</th>
                     <th>カテゴリ</th>
@@ -136,7 +145,7 @@
                 </thead>
                 <tbody id="sharedSubmissionsBody">
                   <tr>
-                    <td colspan="5" class="empty">投稿はありません</td>
+                    <td colspan="6" class="empty">投稿はありません</td>
                   </tr>
                 </tbody>
               </table>

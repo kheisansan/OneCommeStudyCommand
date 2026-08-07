@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  isSubmissionType,
   MAX_SHARED_SUBMISSION_RECORDS,
   type SharedDictionaryCache,
   type SharedDictionaryEntry,
@@ -177,6 +178,7 @@ function isSubmissionRecord(value: unknown): value is SharedSubmissionRecord {
   return (
     typeof candidate.submissionId === "string" &&
     candidate.submissionId.length > 0 &&
+    isSubmissionType(candidate.type) &&
     typeof candidate.word === "string" &&
     typeof candidate.reading === "string" &&
     typeof candidate.category === "string" &&

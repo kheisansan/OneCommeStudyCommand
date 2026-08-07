@@ -111,3 +111,9 @@ test("sharedErrorMessage maps client, validation, and server codes", () => {
   );
   assert.equal(stateApi.sharedErrorMessage(undefined), "エラーが発生しました。");
 });
+
+test("submissionTypeLabel maps types to Japanese labels", () => {
+  assert.equal(stateApi.submissionTypeLabel("add"), "追加");
+  assert.equal(stateApi.submissionTypeLabel("remove"), "削除");
+  assert.equal(stateApi.submissionTypeLabel(undefined), "追加");
+});

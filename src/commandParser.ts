@@ -1,16 +1,32 @@
-import type { EducationCommand } from "./types";
+import type { EducationCommand, ParsedCommand } from "./types";
 
 const TEACH_PREFIX = "教育";
 const FORGET_PREFIX = "忘却";
+const SHARED_TEACH_PREFIX = "共有教育";
+const SHARED_FORGET_PREFIX = "共有忘却";
 const SEARCH_PREFIX = "教育検索(";
 const OPEN_PARENTHESIS = new Set(["(", "（"]);
 const CLOSE_PARENTHESIS = new Set([")", "）"]);
 
-export function parseEducationCommand(input: string): EducationCommand | null {
+export function parseEducationCommand(input: string): ParsedCommand | null {
   const text = input.trim();
 
   if (text === "教育一覧") {
     return { type: "list" };
+  }
+
+  const sharedTeachBody = getCommandBody(text, SHARED_TEACH_PREFIX);
+  if (sharedTeachBody !== null) {
+    const parsed = parseTeach(sharedTeachBody);
+    if (parsed.type === "invalid") return parsed;
+    return { type: "sharedTeach", word: parsed.word, reading: parsed.reading };
+  }
+
+  const sharedForgetBody = getCommandBody(text, SHARED_FORGET_PREFIX);
+  if (sharedForgetBody !== null) {
+    const parsed = parseForget(sharedForgetBody);
+    if (parsed.type === "invalid") return parsed;
+    return { type: "sharedForget", word: parsed.word };
   }
 
   const teachBody = getCommandBody(text, TEACH_PREFIX);
@@ -30,7 +46,7 @@ export function parseEducationCommand(input: string): EducationCommand | null {
   return null;
 }
 
-function parseTeach(body: string): EducationCommand {
+function parseTeach(body: string): Extract<EducationCommand, { type: "teach" | "invalid" }> {
   const separatorIndex = findFirstSeparator(body);
 
   if (separatorIndex < 0) {
@@ -71,7 +87,7 @@ function findFirstSeparator(body: string): number {
   return Math.min(halfWidthIndex, fullWidthIndex);
 }
 
-function parseForget(body: string): EducationCommand {
+function parseForget(body: string): Extract<EducationCommand, { type: "forget" | "invalid" }> {
   const word = body.trim();
 
   if (!word) {

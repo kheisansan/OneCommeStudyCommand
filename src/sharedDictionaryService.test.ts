@@ -32,6 +32,7 @@ function submissionRecord(
 ): SharedSubmissionRecord {
   return {
     submissionId: "abc-123",
+    type: "add" as const,
     word: "github",
     reading: "ギットハブ",
     category: "IT",

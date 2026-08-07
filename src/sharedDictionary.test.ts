@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   importSharedEntries,
   isValidSharedEndpointUrl,
+  MAX_SHARED_AUTHOR_CODE_POINTS,
   MAX_SHARED_READING_CODE_POINTS,
   MAX_SHARED_WORD_CODE_POINTS,
   parseSharedDictionaryResponse,
   parseSharedSubmissionsResponse,
+  sanitizeSharedAuthorName,
   validateSharedSubmission,
   type SharedDictionaryEntry
 } from "./sharedDictionary";
@@ -211,4 +213,80 @@ test("isValidSharedEndpointUrl requires https URLs", () => {
   assert.equal(isValidSharedEndpointUrl("http://script.google.com/macros/s/x/exec"), false);
   assert.equal(isValidSharedEndpointUrl("not a url"), false);
   assert.equal(isValidSharedEndpointUrl(""), false);
+});
+
+test("validateSharedSubmission add includes the submission type", () => {
+  const result = validateSharedSubmission({ word: "GitHub", reading: "ギットハブ" });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.submission.type, "add");
+});
+
+test("validateSharedSubmission remove ignores the reading and keeps the word", () => {
+  const result = validateSharedSubmission({ word: "GitHub", reading: "" }, "remove");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.submission.type, "remove");
+  assert.equal(result.submission.word, "github");
+  assert.equal(result.submission.reading, "");
+
+  const empty = validateSharedSubmission({ word: " ", reading: "" }, "remove");
+  assert.equal(empty.ok, false);
+  if (!empty.ok) {
+    assert.ok(empty.errors.includes("EMPTY_WORD"));
+    assert.ok(!empty.errors.includes("EMPTY_READING"));
+  }
+});
+
+test("sanitizeSharedAuthorName strips forbidden characters and caps the length", () => {
+  assert.equal(sanitizeSharedAuthorName(undefined), "");
+  assert.equal(sanitizeSharedAuthorName("  alice  "), "alice");
+  assert.equal(sanitizeSharedAuthorName("a\u200Blice"), "alice");
+  assert.equal(
+    sanitizeSharedAuthorName("あ".repeat(MAX_SHARED_AUTHOR_CODE_POINTS + 10)).length,
+    MAX_SHARED_AUTHOR_CODE_POINTS
+  );
+});
+
+test("parseSharedSubmissionsResponse defaults missing type to add and validates it", () => {
+  const payload = {
+    ok: true,
+    submissions: [
+      {
+        submissionId: "abc-123",
+        word: "github",
+        reading: "",
+        category: "",
+        type: "remove",
+        status: "pending",
+        createdAt: ""
+      },
+      {
+        submissionId: "abc-124",
+        word: "onecomme",
+        reading: "ワンコメ",
+        category: "",
+        status: "pending",
+        createdAt: ""
+      }
+    ]
+  };
+  const submissions = parseSharedSubmissionsResponse(payload);
+  assert.equal(submissions?.[0].type, "remove");
+  assert.equal(submissions?.[1].type, "add");
+
+  assert.equal(
+    parseSharedSubmissionsResponse({
+      ok: true,
+      submissions: [
+        {
+          submissionId: "abc",
+          word: "w",
+          reading: "r",
+          type: "unknown",
+          status: "pending"
+        }
+      ]
+    }),
+    null
+  );
 });
