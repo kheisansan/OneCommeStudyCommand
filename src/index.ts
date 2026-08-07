@@ -1,6 +1,29 @@
 import { parseEducationCommand } from "./commandParser";
 import { createEmptyDictionary, handleEducationCommand } from "./dictionaryService";
 import { applyDictionary, applyDictionaryWithMaskedFallback } from "./replacer";
+import {
+  importSharedEntries,
+  isValidSharedEndpointUrl,
+  validateSharedSubmission
+} from "./sharedDictionary";
+import {
+  fetchOwnSubmissions,
+  fetchSharedDictionary,
+  submitSharedEntry
+} from "./sharedDictionaryClient";
+import {
+  clearSharedCache,
+  ensureSharedToken,
+  isSharedCacheFresh,
+  loadSharedCache,
+  loadSharedSettings,
+  loadSubmissionRecords,
+  mergeSubmissionRecords,
+  parseSharedDictionaryAction,
+  recordSubmission,
+  saveSharedCache,
+  saveSharedSettings
+} from "./sharedDictionaryService";
 import { StoreDictionaryRepository } from "./storeDictionaryRepository";
 import {
   failure as studyDictionaryImportFailure,
@@ -129,13 +152,14 @@ const plugin = {
     );
   },
 
-  request(req: PluginRequestLike): PluginResponseLike {
+  request(req: PluginRequestLike): PluginResponseLike | Promise<PluginResponseLike> {
     if (req.method === "GET") {
       return {
         code: 200,
         response: {
           settings,
-          dictionary: ensureDictionary()
+          dictionary: ensureDictionary(),
+          sharedDictionary: pluginStore ? buildSharedDictionaryState(pluginStore) : null
         }
       };
     }
@@ -145,6 +169,9 @@ const plugin = {
       if (bodySizeError) return bodySizeError;
 
       const requestType = getPutRequestType(req.body);
+      if (requestType === "sharedDictionary") {
+        return handleSharedDictionaryRequest(req.body);
+      }
       if (requestType === "importStudyDictionary") {
         return importStudyDictionaryEntries(req.body);
       }
@@ -266,12 +293,19 @@ function parsePriorityUpdateRequest(value: unknown): { word: string; priority: n
 
 function getPutRequestType(
   value: unknown
-): "settings" | "createEntry" | "updatePriority" | "importStudyDictionary" | "invalid" {
+):
+  | "settings"
+  | "createEntry"
+  | "updatePriority"
+  | "importStudyDictionary"
+  | "sharedDictionary"
+  | "invalid" {
   const body = parseRequestBody(value);
   if (!body || typeof body !== "object" || Array.isArray(body)) return "invalid";
 
   const candidate = body as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
+  if (keysEqual(keys, ["sharedDictionary"])) return "sharedDictionary";
   if (keysEqual(keys, ["settings"])) return "settings";
   if (keysEqual(keys, ["reading", "word"])) return "createEntry";
   if (keysEqual(keys, ["priority", "word"])) return "updatePriority";
@@ -519,6 +553,208 @@ function deleteDictionaryEntry(value: unknown): PluginResponseLike {
       dictionary
     }
   };
+}
+
+function buildSharedDictionaryState(store: StoreLike) {
+  return {
+    settings: loadSharedSettings(store),
+    cache: loadSharedCache(store),
+    submissions: loadSubmissionRecords(store)
+  };
+}
+
+function sharedSuccessResponse(
+  store: StoreLike,
+  extra: Record<string, unknown> = {}
+): PluginResponseLike {
+  return {
+    code: 200,
+    response: {
+      settings,
+      dictionary: ensureDictionary(),
+      sharedDictionary: buildSharedDictionaryState(store),
+      ...extra
+    }
+  };
+}
+
+function sharedErrorResponse(
+  store: StoreLike,
+  code: number,
+  message: string,
+  sharedError: Record<string, unknown> = {}
+): PluginResponseLike {
+  return {
+    code,
+    response: {
+      message,
+      sharedError,
+      settings,
+      dictionary: ensureDictionary(),
+      sharedDictionary: buildSharedDictionaryState(store)
+    }
+  };
+}
+
+async function handleSharedDictionaryRequest(value: unknown): Promise<PluginResponseLike> {
+  const store = pluginStore;
+  if (!store) {
+    return { code: 500, response: { message: "Plugin store is not ready" } };
+  }
+
+  const body = parseRequestBody(value) as { sharedDictionary?: unknown } | null;
+  const action = parseSharedDictionaryAction(body?.sharedDictionary);
+  if (!action) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary request", {
+      code: "INVALID_ACTION"
+    });
+  }
+
+  switch (action.action) {
+    case "configure":
+      return configureSharedDictionary(store, action.endpointUrl);
+    case "fetch":
+      return fetchSharedDictionaryEntries(store, action.force);
+    case "submit":
+      return submitSharedDictionaryEntry(store, action);
+    case "refreshSubmissions":
+      return refreshSharedSubmissions(store);
+    case "import":
+      return importSharedDictionaryEntries(store, action.ids);
+  }
+}
+
+function configureSharedDictionary(
+  store: StoreLike,
+  endpointUrl: string | null
+): PluginResponseLike {
+  if (endpointUrl !== null && !isValidSharedEndpointUrl(endpointUrl)) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary endpoint", {
+      code: "INVALID_ENDPOINT"
+    });
+  }
+
+  const current = loadSharedSettings(store);
+  if (current.endpointUrl !== endpointUrl) {
+    clearSharedCache(store);
+  }
+  saveSharedSettings(store, { endpointUrl });
+  return sharedSuccessResponse(store);
+}
+
+async function fetchSharedDictionaryEntries(
+  store: StoreLike,
+  force: boolean
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const cache = loadSharedCache(store);
+  if (cache && !force && isSharedCacheFresh(cache)) {
+    return sharedSuccessResponse(store, { sharedFetch: { source: "cache" } });
+  }
+
+  const outcome = await fetchSharedDictionary(endpointUrl, cache?.version ?? null);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to fetch shared dictionary", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  const fetchedAt = new Date().toISOString();
+  if (outcome.payload.notModified && cache) {
+    saveSharedCache(store, { ...cache, fetchedAt });
+  } else {
+    saveSharedCache(store, {
+      version: outcome.payload.version,
+      entries: outcome.payload.entries,
+      fetchedAt
+    });
+  }
+  return sharedSuccessResponse(store, { sharedFetch: { source: "remote" } });
+}
+
+async function submitSharedDictionaryEntry(
+  store: StoreLike,
+  input: { word: string; reading: string; category: string; authorName: string }
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const validation = validateSharedSubmission(input);
+  if (!validation.ok) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary submission", {
+      code: "INVALID_SUBMISSION",
+      errors: validation.errors
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await submitSharedEntry(endpointUrl, validation.submission, token);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to submit shared dictionary entry", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  recordSubmission(store, {
+    submissionId: outcome.submissionId,
+    word: validation.submission.word,
+    reading: validation.submission.reading,
+    category: validation.submission.category,
+    status: "pending",
+    submittedAt: new Date().toISOString()
+  });
+  return sharedSuccessResponse(store, { sharedSubmissionId: outcome.submissionId });
+}
+
+async function refreshSharedSubmissions(store: StoreLike): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await fetchOwnSubmissions(endpointUrl, token);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to fetch shared submissions", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  mergeSubmissionRecords(store, outcome.submissions);
+  return sharedSuccessResponse(store);
+}
+
+function importSharedDictionaryEntries(store: StoreLike, ids: string[]): PluginResponseLike {
+  const cache = loadSharedCache(store);
+  if (!cache) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not fetched", {
+      code: "NO_CACHE"
+    });
+  }
+
+  const imported = importSharedEntries(ensureDictionary(), cache.entries, ids);
+  dictionary = imported.dictionary;
+  repository?.save(imported.dictionary);
+
+  return sharedSuccessResponse(store, { sharedImportResult: imported.result });
 }
 
 function getCommentText(comment: CommentLike): string {

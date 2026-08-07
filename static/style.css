@@ -324,6 +324,85 @@ tbody tr:last-child td {
   white-space: normal;
 }
 
+.shared-dictionary {
+  margin-top: 24px;
+}
+
+.shared-endpoint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.shared-endpoint-field {
+  display: grid;
+  gap: 4px;
+  color: #394956;
+  font-size: 13px;
+}
+
+.shared-endpoint-field input {
+  width: min(460px, 80vw);
+  height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #b8c2cc;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.shared-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 10px;
+}
+
+.shared-fetch-state {
+  color: #607080;
+  font-size: 13px;
+}
+
+.shared-select-col {
+  width: 40px;
+}
+
+.shared-import-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.shared-imported {
+  color: #607080;
+}
+
+.shared-subheading {
+  margin: 20px 0 10px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.shared-submissions {
+  margin-top: 8px;
+}
+
+.shared-status-pending {
+  color: #7a4d08;
+}
+
+.shared-status-approved {
+  color: #245a2d;
+}
+
+.shared-status-rejected {
+  color: #9b1c1c;
+}
+
 .danger-button {
   border-color: #d66b6b;
   color: #9b1c1c;
