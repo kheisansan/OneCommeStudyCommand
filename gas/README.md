@@ -17,8 +17,10 @@
    - `dictionary` / `submissions` / `blocked-users` / `settings` の4シートが作成されます。
 5. モデレータ機能を使う場合は、登録用パスワードを設定します。
    - Apps Scriptエディタの「プロジェクトの設定」(歯車アイコン) →「スクリプト プロパティ」→「スクリプト プロパティを追加」
-   - プロパティ名: `MODERATOR_PASSWORD` / 値: 任意のパスワード
+   - プロパティ名: `MODERATOR_PASSWORD` / 値: **12文字以上**のパスワード (これより短いと登録APIは動作しません)
+   - 推測されにくいよう、パスワードマネージャの生成機能などで作った長いランダム文字列 (例: 24文字以上の英数字) を使ってください。
    - このパスワードはスプレッドシートには保存されず、オーナーのGAS環境にだけ存在します。
+   - 総当たり対策として、パスワード誤りが1時間に10回続くと登録を一時停止します (投稿・取得には影響しません)。
 6. 「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」を選びます。
    - 説明: 任意 (例: `shared-dictionary v1`)
    - 実行するユーザー: **自分**
@@ -118,15 +120,15 @@
 {"action":"registerModerator","password":"…","name":"mod-alice","token":"…"}
 ```
 
-スクリプトプロパティ `MODERATOR_PASSWORD` と一致すればトークンを `moderators` シートへ登録します。拒否コード: `PASSWORD_NOT_SET` (プロパティ未設定)、`INVALID_PASSWORD`、`BLOCKED`。
+スクリプトプロパティ `MODERATOR_PASSWORD` と一致すればトークンを `moderators` シートへ登録します。拒否コード: `PASSWORD_NOT_SET` (プロパティ未設定)、`WEAK_PASSWORD` (プロパティが12文字未満)、`INVALID_PASSWORD`、`REGISTRATION_LOCKED` (失敗超過による一時停止)、`BLOCKED`。
 
 ### POST 承認・却下
 
 ```json
-{"action":"review","word":"github","decision":"approve","token":"…"}
+{"action":"review","submissionId":"abc-123","decision":"approve","token":"…"}
 ```
 
-`decision` は `approve` / `reject`。正規化した単語が一致する承認待ちの申請を1件処理します。拒否コード: `NOT_MODERATOR`、`NOT_FOUND` (該当する承認待ちがない)。
+`decision` は `approve` / `reject`。`submissionId` が一致し、かつ現在も `pending` の申請だけをロック内で再確認して処理します (古い一覧からの誤処理防止)。拒否コード: `NOT_MODERATOR`、`INVALID_SUBMISSION_ID`、`NOT_FOUND` (該当する承認待ちがない、または処理済み)。
 
 ### POST (本文はJSON)
 
@@ -159,5 +161,7 @@
 
 - スプレッドシート本体は非公開のまま。公開されるのはGASウェブアプリの応答だけです。
 - ウェブアプリURLは配布物に含まれるため秘密ではありません。誰でもPOSTできますが、承認されるまで辞書には載りません。
-- 投稿の同時書き込みは `LockService` で直列化しています。
+- 投稿・承認・却下・ブロックなどシートを書き換える処理はすべて `LockService` で直列化しています (Web API・onEditトリガー・メニュー操作の競合を防止)。
+- 外部入力はシートへ保存する際に必ず文字列化し、`=` `+` `-` `@` で始まる値はアポストロフィを前置して数式として評価されないようにしています (数式注入対策)。
+- プラグインは接続先URLを変更するとトークン・投稿履歴・モデレータ状態を破棄して再生成します。旧接続先で得た権限が別の接続先へ持ち越されることはありません。
 - 無料アカウントのGAS実行時間は1日合計約90分です。利用者が増えて取得が多い場合は、`DICTIONARY_CACHE_SECONDS` を延ばすか、`dictionary` シートの「ウェブに公開」(CSV) への切り替えを検討してください。

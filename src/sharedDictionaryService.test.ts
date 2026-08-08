@@ -1,14 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clearSharedToken,
   ensureSharedToken,
   isSharedCacheFresh,
+  loadPendingSubmissions,
   loadSharedCache,
   loadSharedSettings,
   loadSubmissionRecords,
   mergeSubmissionRecords,
   parseSharedDictionaryAction,
   recordSubmission,
+  removePendingSubmissionById,
+  savePendingSubmissions,
   saveSharedCache,
   SHARED_CACHE_TTL_MS
 } from "./sharedDictionaryService";
@@ -198,4 +202,62 @@ test("loadSubmissionRecords drops invalid stored records", () => {
     "broken"
   ]);
   assert.equal(loadSubmissionRecords(store).length, 1);
+});
+
+test("clearSharedToken forces a new token on the next ensure", () => {
+  const store = new MemoryStore();
+  let generated = 0;
+  const generate = () => {
+    generated += 1;
+    return `token-${generated}`;
+  };
+
+  assert.equal(ensureSharedToken(store, generate), "token-1");
+  clearSharedToken(store);
+  assert.equal(ensureSharedToken(store, generate), "token-2");
+});
+
+test("parseSharedDictionaryAction review requires a submission id", () => {
+  assert.deepEqual(
+    parseSharedDictionaryAction({ action: "review", submissionId: " p-1 ", decision: "reject" }),
+    { action: "review", submissionId: "p-1", decision: "reject" }
+  );
+  assert.equal(
+    parseSharedDictionaryAction({ action: "review", submissionId: "", decision: "approve" }),
+    null
+  );
+  assert.equal(
+    parseSharedDictionaryAction({ action: "review", word: "github", decision: "approve" }),
+    null
+  );
+});
+
+test("removePendingSubmissionById removes only the matching submission", () => {
+  const store = new MemoryStore();
+  const pending = [
+    {
+      submissionId: "p-1",
+      type: "add",
+      word: "github",
+      reading: "ギットハブ",
+      category: "",
+      authorName: "",
+      createdAt: ""
+    },
+    {
+      submissionId: "p-2",
+      type: "remove",
+      word: "onecomme",
+      reading: "",
+      category: "",
+      authorName: "",
+      createdAt: ""
+    }
+  ] as const;
+  savePendingSubmissions(store, [...pending]);
+
+  removePendingSubmissionById(store, "p-1");
+  const remaining = loadPendingSubmissions(store);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].submissionId, "p-2");
 });

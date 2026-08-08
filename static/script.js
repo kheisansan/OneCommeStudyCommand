@@ -553,18 +553,21 @@ async function refreshSharedPending() {
   }
 }
 
-async function reviewPendingSubmission(word, decision) {
+async function reviewPendingSubmission(submission, decision) {
   if (state.requestLocked) return;
   const decisionLabel = decision === "approve" ? "承認" : "却下";
-  if (!window.confirm(`「${word}」を${decisionLabel}しますか？`)) return;
+  if (!window.confirm(`「${submission.word}」を${decisionLabel}しますか？`)) return;
   if (state.requestLocked) return;
 
   try {
-    const data = await sharedRequest({ action: "review", word, decision }, `${decisionLabel}中`);
+    const data = await sharedRequest(
+      { action: "review", submissionId: submission.submissionId, decision },
+      `${decisionLabel}中`
+    );
     if (!data) return;
     applyManagementData(data);
     renderAll();
-    setStatus(`${word} を${decisionLabel}しました`);
+    setStatus(`${submission.word} を${decisionLabel}しました`);
   } catch (error) {
     reportSharedError(error, `${decisionLabel}に失敗しました`);
     renderAll();
@@ -642,20 +645,20 @@ function renderSharedPending() {
     const approveButton = document.createElement("button");
     approveButton.type = "button";
     approveButton.textContent = "承認";
-    approveButton.dataset.pendingReview = submission.word;
+    approveButton.dataset.pendingReview = submission.submissionId;
     approveButton.disabled = state.requestLocked;
     approveButton.addEventListener("click", () =>
-      reviewPendingSubmission(submission.word, "approve")
+      reviewPendingSubmission(submission, "approve")
     );
 
     const rejectButton = document.createElement("button");
     rejectButton.type = "button";
     rejectButton.className = "danger-button";
     rejectButton.textContent = "却下";
-    rejectButton.dataset.pendingReview = submission.word;
+    rejectButton.dataset.pendingReview = submission.submissionId;
     rejectButton.disabled = state.requestLocked;
     rejectButton.addEventListener("click", () =>
-      reviewPendingSubmission(submission.word, "reject")
+      reviewPendingSubmission(submission, "reject")
     );
 
     actions.append(approveButton, rejectButton);

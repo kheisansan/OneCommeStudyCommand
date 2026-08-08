@@ -123,7 +123,7 @@ export type SharedPendingFetchOutcome =
   | SharedDictionaryClientError;
 
 export type SharedReviewOutcome =
-  | { ok: true; result: "reviewed"; word: string }
+  | { ok: true; submissionId: string; word: string }
   | SharedDictionaryClientError;
 
 export async function registerSharedModerator(
@@ -168,7 +168,7 @@ export async function fetchPendingSubmissions(
 
 export async function reviewSharedSubmission(
   endpointUrl: string,
-  word: string,
+  submissionId: string,
   decision: SharedReviewDecision,
   token: string,
   fetchImpl: FetchLike = fetch,
@@ -179,7 +179,7 @@ export async function reviewSharedSubmission(
     {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "review", word, decision, token })
+      body: JSON.stringify({ action: "review", submissionId, decision, token })
     },
     fetchImpl,
     timeoutMs
@@ -190,8 +190,8 @@ export async function reviewSharedSubmission(
   if (body && body.ok === true) {
     return {
       ok: true,
-      result: "reviewed",
-      word: typeof body.word === "string" ? body.word : word
+      submissionId,
+      word: typeof body.word === "string" ? body.word : ""
     };
   }
   return serverErrorFrom(requested.body);
@@ -209,33 +209,51 @@ async function requestJson(
 ): Promise<JsonRequestOutcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let phase: "request" | "body" = "request";
 
-  let response: FetchResponseLike;
   try {
-    response = await fetchImpl(url, {
+    const response = await fetchImpl(url, {
       ...init,
       redirect: "follow",
       signal: controller.signal
     });
-  } catch (error) {
-    return {
-      ok: false,
-      code: controller.signal.aborted ? "TIMEOUT" : "NETWORK_ERROR"
-    };
+
+    // GASはエラー応答もHTTP 200で返すため、本文のokで判定する
+    if (!response.ok) {
+      return { ok: false, code: "HTTP_ERROR", status: response.status };
+    }
+
+    // fetchのsignalはヘッダー受信後の本文読み取りを中断しない実装が
+    // あり得るため、本文の完了もタイムアウト対象にする
+    phase = "body";
+    const body = await withAbort(response.json(), controller.signal);
+    return { ok: true, body };
+  } catch {
+    if (controller.signal.aborted) {
+      return { ok: false, code: "TIMEOUT" };
+    }
+    return { ok: false, code: phase === "request" ? "NETWORK_ERROR" : "INVALID_RESPONSE" };
   } finally {
     clearTimeout(timer);
   }
+}
 
-  // GASはエラー応答もHTTP 200で返すため、本文のokで判定する
-  if (!response.ok) {
-    return { ok: false, code: "HTTP_ERROR", status: response.status };
-  }
-
-  try {
-    return { ok: true, body: await response.json() };
-  } catch {
-    return { ok: false, code: "INVALID_RESPONSE" };
-  }
+function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 function serverErrorFrom(body: unknown): SharedDictionaryClientError {

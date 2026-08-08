@@ -70,6 +70,14 @@ var DICTIONARY_CACHE_SECONDS = 300;
 
 var FORBIDDEN_CHARACTERS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
 var TOKEN_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+var SUBMISSION_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+
+// セル数式として評価され得る先頭文字 (数式注入対策)
+var FORMULA_PREFIX = /^[=+\-@]/;
+
+var MIN_MODERATOR_PASSWORD_LENGTH = 12;
+var REGISTER_FAILURE_CACHE_KEY = "register-failures";
+var MAX_REGISTER_FAILURES_PER_HOUR = 10;
 
 // ---------------------------------------------------------------------------
 // セットアップとメニュー
@@ -361,10 +369,10 @@ function handleSubmit_(body) {
     submissions.appendRow([
       submissionId,
       validated.type,
-      validated.word,
-      validated.reading,
-      validated.category,
-      validated.authorName,
+      sanitizeCellValue_(validated.word),
+      sanitizeCellValue_(validated.reading),
+      sanitizeCellValue_(validated.category),
+      sanitizeCellValue_(validated.authorName),
       token,
       "pending",
       new Date().toISOString(),
@@ -483,9 +491,20 @@ function handleRegisterModerator_(body) {
   if (!expected) {
     return jsonOutput_({ ok: false, code: "PASSWORD_NOT_SET" });
   }
+  // 弱いパスワードのまま登録APIを公開しない (総当たり対策)
+  if (expected.length < MIN_MODERATOR_PASSWORD_LENGTH) {
+    return jsonOutput_({ ok: false, code: "WEAK_PASSWORD" });
+  }
+
+  var cache = CacheService.getScriptCache();
+  var failures = Number(cache.get(REGISTER_FAILURE_CACHE_KEY) || 0);
+  if (failures >= MAX_REGISTER_FAILURES_PER_HOUR) {
+    return jsonOutput_({ ok: false, code: "REGISTRATION_LOCKED" });
+  }
 
   var password = typeof body.password === "string" ? body.password : "";
-  if (password === "" || password !== expected) {
+  if (password === "" || !constantTimeEquals_(password, expected)) {
+    cache.put(REGISTER_FAILURE_CACHE_KEY, String(failures + 1), 3600);
     return jsonOutput_({ ok: false, code: "INVALID_PASSWORD" });
   }
 
@@ -514,15 +533,24 @@ function handleRegisterModerator_(body) {
     var existingRow = findModeratorRow_(sheet, token);
     if (existingRow > 0) {
       if (name !== "") {
-        sheet.getRange(existingRow, 2).setValue(name);
+        sheet.getRange(existingRow, 2).setValue(sanitizeCellValue_(name));
       }
     } else {
-      sheet.appendRow([token, name, new Date().toISOString()]);
+      sheet.appendRow([token, sanitizeCellValue_(name), new Date().toISOString()]);
     }
     return jsonOutput_({ ok: true });
   } finally {
     lock.releaseLock();
   }
+}
+
+function constantTimeEquals_(actual, expected) {
+  if (actual.length !== expected.length) return false;
+  var mismatch = 0;
+  for (var index = 0; index < actual.length; index += 1) {
+    mismatch |= actual.charCodeAt(index) ^ expected.charCodeAt(index);
+  }
+  return mismatch === 0;
 }
 
 function handleGetPending_(e) {
@@ -571,9 +599,9 @@ function handleReview_(body) {
     return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
   }
 
-  var word = normalizeDictionaryWord_(typeof body.word === "string" ? body.word : "");
-  if (word === "") {
-    return jsonOutput_({ ok: false, code: "INVALID_WORD" });
+  var submissionId = typeof body.submissionId === "string" ? body.submissionId : "";
+  if (!SUBMISSION_ID_PATTERN.test(submissionId)) {
+    return jsonOutput_({ ok: false, code: "INVALID_SUBMISSION_ID" });
   }
 
   var lock = LockService.getScriptLock();
@@ -591,11 +619,15 @@ function handleReview_(body) {
       return jsonOutput_({ ok: false, code: "NOT_INITIALIZED" });
     }
 
-    var rowNumber = findPendingRowByWord_(submissions, word);
+    // ロック内で対象行と状態を再確認する (古い一覧からの誤処理防止)
+    var rowNumber = findPendingRowBySubmissionId_(submissions, submissionId);
     if (rowNumber < 0) {
       return jsonOutput_({ ok: false, code: "NOT_FOUND" });
     }
 
+    var word = normalizeDictionaryWord_(
+      String(submissions.getRange(rowNumber, SUB_WORD + 1).getValue())
+    );
     var nextStatus = decision === "approve" ? "approved" : "rejected";
     var reviewedBy = moderatorName !== "" ? moderatorName : "moderator:" + token.slice(0, 8);
     var result = processReviewRow_(submissions, dictionary, rowNumber, nextStatus, reviewedBy);
@@ -605,20 +637,25 @@ function handleReview_(body) {
     if (nextStatus === "approved") {
       bumpDictionaryVersion_();
     }
-    return jsonOutput_({ ok: true, word: word, decision: decision });
+    return jsonOutput_({
+      ok: true,
+      submissionId: submissionId,
+      word: word,
+      decision: decision
+    });
   } finally {
     lock.releaseLock();
   }
 }
 
-function findPendingRowByWord_(submissions, word) {
+function findPendingRowBySubmissionId_(submissions, submissionId) {
   if (submissions.getLastRow() <= 1) return -1;
   var values = submissions
     .getRange(2, 1, submissions.getLastRow() - 1, SUBMISSION_HEADERS.length)
     .getValues();
   for (var row = 0; row < values.length; row += 1) {
     if (String(values[row][SUB_STATUS]) !== "pending") continue;
-    if (normalizeDictionaryWord_(String(values[row][SUB_WORD])) === word) {
+    if (String(values[row][SUB_ID]) === submissionId) {
       return row + 2;
     }
   }
@@ -671,26 +708,37 @@ function reviewSelectedSubmissions_(nextStatus) {
     return;
   }
 
-  var reviewed = 0;
-  var skipped = 0;
-
-  for (var index = 0; index < selection.rows.length; index += 1) {
-    var result = processReviewRow_(
-      submissions,
-      dictionary,
-      selection.rows[index],
-      nextStatus,
-      "owner"
-    );
-    if (result === "reviewed") {
-      reviewed += 1;
-    } else {
-      skipped += 1;
-    }
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (error) {
+    ui.alert("処理が混み合っています。もう一度お試しください。");
+    return;
   }
 
-  if (reviewed > 0 && nextStatus === "approved") {
-    bumpDictionaryVersion_();
+  var reviewed = 0;
+  var skipped = 0;
+  try {
+    for (var index = 0; index < selection.rows.length; index += 1) {
+      var result = processReviewRow_(
+        submissions,
+        dictionary,
+        selection.rows[index],
+        nextStatus,
+        "owner"
+      );
+      if (result === "reviewed") {
+        reviewed += 1;
+      } else {
+        skipped += 1;
+      }
+    }
+
+    if (reviewed > 0 && nextStatus === "approved") {
+      bumpDictionaryVersion_();
+    }
+  } finally {
+    lock.releaseLock();
   }
 
   var statusLabel = nextStatus === "approved" ? "承認" : "却下";
@@ -718,10 +766,10 @@ function processReviewRow_(submissions, dictionary, rowNumber, nextStatus, revie
     } else {
       dictionary.appendRow([
         String(record[SUB_ID]),
-        word,
-        String(record[SUB_READING]),
-        String(record[SUB_CATEGORY] || ""),
-        String(record[SUB_AUTHOR] || ""),
+        sanitizeCellValue_(word),
+        sanitizeCellValue_(String(record[SUB_READING])),
+        sanitizeCellValue_(String(record[SUB_CATEGORY] || "")),
+        sanitizeCellValue_(String(record[SUB_AUTHOR] || "")),
         true,
         now
       ]);
@@ -759,16 +807,28 @@ function blockSelectedSubmitters() {
     return;
   }
 
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+  } catch (error) {
+    ui.alert("処理が混み合っています。もう一度お試しください。");
+    return;
+  }
+
   var now = new Date().toISOString();
   var added = 0;
-  for (var index = 0; index < selection.rows.length; index += 1) {
-    var record = selection.sheet
-      .getRange(selection.rows[index], 1, 1, SUBMISSION_HEADERS.length)
-      .getValues()[0];
-    var token = String(record[SUB_TOKEN]);
-    if (!token || isTokenBlocked_(token)) continue;
-    blocked.appendRow([token, "submission: " + String(record[SUB_ID]), now]);
-    added += 1;
+  try {
+    for (var index = 0; index < selection.rows.length; index += 1) {
+      var record = selection.sheet
+        .getRange(selection.rows[index], 1, 1, SUBMISSION_HEADERS.length)
+        .getValues()[0];
+      var token = String(record[SUB_TOKEN]);
+      if (!token || isTokenBlocked_(token)) continue;
+      blocked.appendRow([token, "submission: " + String(record[SUB_ID]), now]);
+      added += 1;
+    }
+  } finally {
+    lock.releaseLock();
   }
   ui.alert("ブロックした投稿者: " + added + "件");
 }
@@ -867,6 +927,16 @@ function normalizeDictionaryWord_(value) {
 
 function collapseWhitespace_(value) {
   return String(value).trim().replace(/\s+/g, " ");
+}
+
+/**
+ * 外部入力を必ず文字列としてセルへ保存する。先頭が数式として解釈され得る
+ * 文字の場合はアポストロフィを前置し、数式評価を無効化する
+ * (取得時のgetValuesはアポストロフィを含まない元のテキストを返す)。
+ */
+function sanitizeCellValue_(value) {
+  var text = String(value == null ? "" : value);
+  return FORMULA_PREFIX.test(text) ? "'" + text : text;
 }
 
 function codePointLength_(value) {

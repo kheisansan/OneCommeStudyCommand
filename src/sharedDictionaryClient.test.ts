@@ -152,3 +152,14 @@ test("fetchOwnSubmissions requests the submissions action with the token", async
   assert.equal(url.searchParams.get("action"), "submissions");
   assert.equal(url.searchParams.get("token"), "token-1");
 });
+
+test("fetchSharedDictionary times out while reading the response body", async () => {
+  const fetchImpl: FetchLike = async () => ({
+    ok: true,
+    status: 200,
+    json: () => new Promise<unknown>(() => {})
+  });
+
+  const outcome = await fetchSharedDictionary(ENDPOINT, null, fetchImpl, 20);
+  assert.deepEqual(outcome, { ok: false, code: "TIMEOUT" });
+});

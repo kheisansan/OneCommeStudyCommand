@@ -19,6 +19,8 @@ import {
 import {
   clearModeratorState,
   clearSharedCache,
+  clearSharedToken,
+  clearSubmissionRecords,
   ensureSharedToken,
   isSharedCacheFresh,
   loadModeratorState,
@@ -29,7 +31,7 @@ import {
   mergeSubmissionRecords,
   parseSharedDictionaryAction,
   recordSubmission,
-  removePendingSubmissionByWord,
+  removePendingSubmissionById,
   savePendingSubmissions,
   saveModeratorState,
   saveSharedCache,
@@ -719,10 +721,34 @@ function startSharedReview(
   decision: "approve" | "reject"
 ): void {
   const token = ensureSharedToken(store);
-  reviewSharedSubmission(endpointUrl, word, decision, token)
-    .then((outcome) => {
+  // 単語だけでは古い申請と新しい申請を区別できないため、実行時点の
+  // 承認待ち一覧からsubmissionIdを解決してから処理する
+  fetchPendingSubmissions(endpointUrl, token)
+    .then(async (pendingOutcome) => {
+      if (!pendingOutcome.ok) {
+        console.warn(
+          `[OneCommeStudyCommand] shared review skipped (pending fetch failed): ${pendingOutcome.code} ${pendingOutcome.serverCode ?? ""}`
+        );
+        return;
+      }
+
+      savePendingSubmissions(store, pendingOutcome.pending);
+      const target = pendingOutcome.pending.find(
+        (submission) => normalizeDictionaryWord(submission.word) === word
+      );
+      if (!target) {
+        console.warn(`[OneCommeStudyCommand] shared review skipped: no pending for ${word}`);
+        return;
+      }
+
+      const outcome = await reviewSharedSubmission(
+        endpointUrl,
+        target.submissionId,
+        decision,
+        token
+      );
       if (outcome.ok) {
-        removePendingSubmissionByWord(store, word, normalizeDictionaryWord);
+        removePendingSubmissionById(store, target.submissionId);
         console.info(`[OneCommeStudyCommand] shared review done: ${decision} ${word}`);
       } else {
         console.warn(
@@ -808,7 +834,7 @@ async function handleSharedDictionaryRequest(value: unknown): Promise<PluginResp
     case "refreshPending":
       return refreshSharedPending(store);
     case "review":
-      return reviewSharedSubmissionRequest(store, action.word, action.decision);
+      return reviewSharedSubmissionRequest(store, action.submissionId, action.decision);
   }
 }
 
@@ -824,10 +850,13 @@ function configureSharedDictionary(
 
   const current = loadSharedSettings(store);
   if (current.endpointUrl !== endpointUrl) {
-    // 接続先が変わったら、その接続先に紐づく状態をすべて破棄する
+    // 接続先が変わったら、その接続先に紐づく状態をすべて破棄する。
+    // トークンも再生成し、旧接続先で得た権限が新接続先へ漏れないようにする
     clearSharedCache(store);
     clearModeratorState(store);
     savePendingSubmissions(store, []);
+    clearSubmissionRecords(store);
+    clearSharedToken(store);
   }
   saveSharedSettings(store, { endpointUrl });
   return sharedSuccessResponse(store);
@@ -897,7 +926,7 @@ async function refreshSharedPending(store: StoreLike): Promise<PluginResponseLik
 
 async function reviewSharedSubmissionRequest(
   store: StoreLike,
-  word: string,
+  submissionId: string,
   decision: "approve" | "reject"
 ): Promise<PluginResponseLike> {
   const endpointUrl = loadSharedSettings(store).endpointUrl;
@@ -912,15 +941,8 @@ async function reviewSharedSubmissionRequest(
     });
   }
 
-  const normalizedWord = normalizeDictionaryWord(word);
-  if (!normalizedWord) {
-    return sharedErrorResponse(store, 400, "Invalid review word", {
-      code: "INVALID_ACTION"
-    });
-  }
-
   const token = ensureSharedToken(store);
-  const outcome = await reviewSharedSubmission(endpointUrl, normalizedWord, decision, token);
+  const outcome = await reviewSharedSubmission(endpointUrl, submissionId, decision, token);
   if (!outcome.ok) {
     if (outcome.code === "SERVER_REJECTED" && outcome.serverCode === "NOT_MODERATOR") {
       clearModeratorState(store);
@@ -933,9 +955,9 @@ async function reviewSharedSubmissionRequest(
     });
   }
 
-  removePendingSubmissionByWord(store, normalizedWord, normalizeDictionaryWord);
+  removePendingSubmissionById(store, submissionId);
   return sharedSuccessResponse(store, {
-    sharedReviewResult: { word: normalizedWord, decision }
+    sharedReviewResult: { submissionId, word: outcome.word, decision }
   });
 }
 
