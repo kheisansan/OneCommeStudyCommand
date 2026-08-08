@@ -3,6 +3,14 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   root.ManagementState = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
+  const SETTINGS_KEYS = [
+    "educationCommandEnabled",
+    "forgetCommandEnabled",
+    "sharedEducationCommandEnabled",
+    "sharedForgetCommandEnabled",
+    "sharedReviewCommandEnabled"
+  ];
+
   function createManagementState() {
     return {
       baselineSettings: null,
@@ -72,10 +80,8 @@
 
   function isSettingsDirty(state) {
     if (!state.baselineSettings || !state.currentSettings) return false;
-    return (
-      state.baselineSettings.educationCommandEnabled !==
-        state.currentSettings.educationCommandEnabled ||
-      state.baselineSettings.forgetCommandEnabled !== state.currentSettings.forgetCommandEnabled
+    return SETTINGS_KEYS.some(
+      (key) => state.baselineSettings[key] !== state.currentSettings[key]
     );
   }
 
@@ -132,10 +138,11 @@
   }
 
   function copySettings(settings) {
-    return {
-      educationCommandEnabled: Boolean(settings.educationCommandEnabled),
-      forgetCommandEnabled: Boolean(settings.forgetCommandEnabled)
-    };
+    const copied = {};
+    for (const key of SETTINGS_KEYS) {
+      copied[key] = Boolean(settings[key]);
+    }
+    return copied;
   }
 
   function priorityEquals(value, priority) {

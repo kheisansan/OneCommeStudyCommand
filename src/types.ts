@@ -38,12 +38,40 @@ export type InvalidCommand = {
   message: string;
 };
 
+export type SharedTeachCommand = {
+  type: "sharedTeach";
+  word: string;
+  reading: string;
+};
+
+export type SharedForgetCommand = {
+  type: "sharedForget";
+  word: string;
+};
+
+export type SharedApproveCommand = {
+  type: "sharedApprove";
+  word: string;
+};
+
+export type SharedRejectCommand = {
+  type: "sharedReject";
+  word: string;
+};
+
 export type EducationCommand =
   | TeachCommand
   | ForgetCommand
   | ListCommand
   | SearchCommand
   | InvalidCommand;
+
+export type ParsedCommand =
+  | EducationCommand
+  | SharedTeachCommand
+  | SharedForgetCommand
+  | SharedApproveCommand
+  | SharedRejectCommand;
 
 export type CommandResult = {
   handled: boolean;
@@ -54,6 +82,9 @@ export type CommandResult = {
 export type PluginSettings = {
   educationCommandEnabled: boolean;
   forgetCommandEnabled: boolean;
+  sharedEducationCommandEnabled: boolean;
+  sharedForgetCommandEnabled: boolean;
+  sharedReviewCommandEnabled: boolean;
 };
 
 export type StoreLike = {

@@ -2,12 +2,16 @@ const PLUGIN_UID = "games.tang-chao.study-command";
 const API_URL = `http://localhost:11180/api/plugins/${PLUGIN_UID}`;
 const stateApi = window.ManagementState;
 const studyImportApi = window.StudyDictionaryImport;
+const sharedApi = window.SharedDictionaryState;
 
 const statusElement = document.getElementById("status");
 const reloadButton = document.getElementById("reloadButton");
 const saveSettingsButton = document.getElementById("saveSettingsButton");
 const educationCommandEnabled = document.getElementById("educationCommandEnabled");
 const forgetCommandEnabled = document.getElementById("forgetCommandEnabled");
+const sharedEducationCommandEnabled = document.getElementById("sharedEducationCommandEnabled");
+const sharedForgetCommandEnabled = document.getElementById("sharedForgetCommandEnabled");
+const sharedReviewCommandEnabled = document.getElementById("sharedReviewCommandEnabled");
 const settingsState = document.getElementById("settingsState");
 const addEntryForm = document.getElementById("addEntryForm");
 const addEntryButton = document.getElementById("addEntryButton");
@@ -20,23 +24,68 @@ const importStudyDictionaryButton = document.getElementById("importStudyDictiona
 const importAvailability = document.getElementById("importAvailability");
 const importPreview = document.getElementById("importPreview");
 const importCompletedResult = document.getElementById("importCompletedResult");
+const sharedEndpointUrl = document.getElementById("sharedEndpointUrl");
+const saveSharedEndpointButton = document.getElementById("saveSharedEndpointButton");
+const sharedDictionaryBody = document.getElementById("sharedDictionaryBody");
+const fetchSharedButton = document.getElementById("fetchSharedButton");
+const sharedFetchState = document.getElementById("sharedFetchState");
+const sharedSelectAll = document.getElementById("sharedSelectAll");
+const sharedEntriesBody = document.getElementById("sharedEntriesBody");
+const importSharedButton = document.getElementById("importSharedButton");
+const sharedSelectionCount = document.getElementById("sharedSelectionCount");
+const sharedImportResult = document.getElementById("sharedImportResult");
+const sharedSubmitForm = document.getElementById("sharedSubmitForm");
+const sharedSubmitWord = document.getElementById("sharedSubmitWord");
+const sharedSubmitReading = document.getElementById("sharedSubmitReading");
+const sharedSubmitCategory = document.getElementById("sharedSubmitCategory");
+const sharedSubmitAuthor = document.getElementById("sharedSubmitAuthor");
+const sharedSubmitButton = document.getElementById("sharedSubmitButton");
+const refreshSubmissionsButton = document.getElementById("refreshSubmissionsButton");
+const sharedSubmissionsBody = document.getElementById("sharedSubmissionsBody");
+const moderatorState = document.getElementById("moderatorState");
+const moderatorRegisterForm = document.getElementById("moderatorRegisterForm");
+const moderatorPassword = document.getElementById("moderatorPassword");
+const moderatorName = document.getElementById("moderatorName");
+const registerModeratorButton = document.getElementById("registerModeratorButton");
+const moderatorPanel = document.getElementById("moderatorPanel");
+const refreshPendingButton = document.getElementById("refreshPendingButton");
+const sharedPendingBody = document.getElementById("sharedPendingBody");
 
 let state = stateApi.createManagementState();
+let sharedState = sharedApi.createSharedDictionaryState();
 let savingPriorityWord = null;
 let hasDictionaryBaseline = false;
 let selectedStudyDictionary = null;
 let fileSelectionVersion = 0;
+let sharedEndpointDraft = null;
 
 reloadButton.addEventListener("click", loadManagementData);
 saveSettingsButton.addEventListener("click", saveSettings);
 educationCommandEnabled.addEventListener("change", updateCurrentSettings);
 forgetCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedEducationCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedForgetCommandEnabled.addEventListener("change", updateCurrentSettings);
+sharedReviewCommandEnabled.addEventListener("change", updateCurrentSettings);
 addEntryForm.addEventListener("submit", (event) => {
   event.preventDefault();
   addEntry();
 });
 studyDictionaryFile.addEventListener("change", selectStudyDictionary);
 importStudyDictionaryButton.addEventListener("click", confirmAndImportStudyDictionary);
+sharedEndpointUrl.addEventListener("input", () => {
+  sharedEndpointDraft = sharedEndpointUrl.value;
+});
+saveSharedEndpointButton.addEventListener("click", saveSharedEndpoint);
+fetchSharedButton.addEventListener("click", () => fetchSharedDictionary(true));
+sharedSelectAll.addEventListener("change", toggleAllSharedSelection);
+importSharedButton.addEventListener("click", confirmAndImportSharedEntries);
+sharedSubmitForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitSharedEntry();
+});
+refreshSubmissionsButton.addEventListener("click", refreshSharedSubmissions);
+registerModeratorButton.addEventListener("click", registerModerator);
+refreshPendingButton.addEventListener("click", refreshSharedPending);
 
 loadManagementData();
 
@@ -49,6 +98,11 @@ async function loadManagementData() {
     setStatus("表示中");
   } catch (error) {
     reportError(error, "読み込みに失敗しました");
+    return;
+  }
+
+  if (sharedState.settings.endpointUrl && !sharedState.cache) {
+    await fetchSharedDictionary(false);
   }
 }
 
@@ -264,12 +318,19 @@ function renderAll() {
   renderSettings();
   renderEntries();
   renderStudyImport();
+  renderSharedDictionary();
   updateControls();
 }
 
 function applyManagementData(data, options) {
   state = stateApi.applyManagementData(state, data, options);
   hasDictionaryBaseline = true;
+  if (data.sharedDictionary !== undefined) {
+    sharedState = sharedApi.applySharedData(sharedState, data.sharedDictionary, state.entries);
+  } else {
+    // 辞書だけが変わった場合も取り込み済み判定を更新する
+    sharedState = sharedApi.applySharedData(sharedState, sharedState, state.entries);
+  }
   if (selectedStudyDictionary) {
     selectedStudyDictionary.preview = studyImportApi.preview(
       selectedStudyDictionary.fileName,
@@ -362,10 +423,390 @@ function renderCompletedImportResult(result) {
   importCompletedResult.hidden = false;
 }
 
+async function sharedRequest(body, busyStatus) {
+  return requestManagementData(
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sharedDictionary: body })
+    },
+    busyStatus
+  );
+}
+
+async function saveSharedEndpoint() {
+  try {
+    const endpointUrl = sharedEndpointUrl.value.trim();
+    const data = await sharedRequest(
+      { action: "configure", endpointUrl: endpointUrl === "" ? null : endpointUrl },
+      "共有辞書の設定を保存中"
+    );
+    if (!data) return;
+    applyManagementData(data);
+    sharedEndpointDraft = null;
+    renderAll();
+    setStatus(endpointUrl === "" ? "共有辞書の設定を解除しました" : "共有辞書の設定を保存しました");
+    if (endpointUrl !== "") await fetchSharedDictionary(false);
+  } catch (error) {
+    reportSharedError(error, "共有辞書の設定に失敗しました");
+  }
+}
+
+async function fetchSharedDictionary(force) {
+  try {
+    const data = await sharedRequest({ action: "fetch", force }, "共有辞書を取得中");
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus(data.sharedFetch?.source === "cache" ? "共有辞書を表示中" : "共有辞書を取得しました");
+  } catch (error) {
+    reportSharedError(error, "共有辞書の取得に失敗しました");
+    renderAll();
+  }
+}
+
+function toggleAllSharedSelection() {
+  const importable = sharedApi.importableIds(sharedState.cache, state.entries);
+  sharedState = sharedApi.setAllSelected(sharedState, importable, sharedSelectAll.checked);
+  renderSharedDictionary();
+  updateControls();
+}
+
+async function confirmAndImportSharedEntries() {
+  if (state.requestLocked || sharedState.selectedIds.size === 0) return;
+  const count = sharedState.selectedIds.size;
+  if (!window.confirm(`選択した${count}件を教育辞書へ取り込みますか？`)) return;
+  if (state.requestLocked || sharedState.selectedIds.size === 0) return;
+
+  try {
+    const data = await sharedRequest(
+      { action: "import", ids: [...sharedState.selectedIds] },
+      "取り込み中"
+    );
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    renderSharedImportResult(data.sharedImportResult);
+    setStatus("共有辞書から取り込みました");
+  } catch (error) {
+    reportSharedError(error, "取り込みに失敗しました");
+  }
+}
+
+async function submitSharedEntry() {
+  try {
+    const data = await sharedRequest(
+      {
+        action: "submit",
+        word: sharedSubmitWord.value,
+        reading: sharedSubmitReading.value,
+        category: sharedSubmitCategory.value,
+        authorName: sharedSubmitAuthor.value
+      },
+      "投稿中"
+    );
+    if (!data) return;
+    applyManagementData(data);
+    sharedSubmitWord.value = "";
+    sharedSubmitReading.value = "";
+    sharedSubmitCategory.value = "";
+    renderAll();
+    setStatus("投稿しました。オーナーの承認をお待ちください");
+  } catch (error) {
+    reportSharedError(error, "投稿に失敗しました");
+  }
+}
+
+async function registerModerator() {
+  const password = moderatorPassword.value;
+  if (!password.trim()) {
+    setStatus("パスワードを入力してください");
+    return;
+  }
+
+  try {
+    const data = await sharedRequest(
+      { action: "registerModerator", password, name: moderatorName.value.trim() },
+      "モデレータ登録中"
+    );
+    if (!data) return;
+    applyManagementData(data);
+    moderatorPassword.value = "";
+    renderAll();
+    setStatus("モデレータとして登録しました");
+    await refreshSharedPending();
+  } catch (error) {
+    reportSharedError(error, "モデレータ登録に失敗しました");
+  }
+}
+
+async function refreshSharedPending() {
+  try {
+    const data = await sharedRequest({ action: "refreshPending" }, "承認待ちを取得中");
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus("承認待ちを更新しました");
+  } catch (error) {
+    reportSharedError(error, "承認待ちの取得に失敗しました");
+    renderAll();
+  }
+}
+
+async function reviewPendingSubmission(word, decision) {
+  if (state.requestLocked) return;
+  const decisionLabel = decision === "approve" ? "承認" : "却下";
+  if (!window.confirm(`「${word}」を${decisionLabel}しますか？`)) return;
+  if (state.requestLocked) return;
+
+  try {
+    const data = await sharedRequest({ action: "review", word, decision }, `${decisionLabel}中`);
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus(`${word} を${decisionLabel}しました`);
+  } catch (error) {
+    reportSharedError(error, `${decisionLabel}に失敗しました`);
+    renderAll();
+  }
+}
+
+async function refreshSharedSubmissions() {
+  try {
+    const data = await sharedRequest({ action: "refreshSubmissions" }, "投稿状況を確認中");
+    if (!data) return;
+    applyManagementData(data);
+    renderAll();
+    setStatus("投稿状況を更新しました");
+  } catch (error) {
+    reportSharedError(error, "投稿状況の取得に失敗しました");
+  }
+}
+
+function renderSharedDictionary() {
+  if (sharedEndpointDraft === null) {
+    sharedEndpointUrl.value = sharedState.settings.endpointUrl ?? "";
+  }
+  sharedDictionaryBody.hidden = !sharedState.settings.endpointUrl;
+  renderSharedFetchState();
+  renderSharedEntries();
+  renderSharedModerator();
+  renderSharedSubmissions();
+}
+
+function renderSharedModerator() {
+  const registered = sharedState.moderator.registered;
+  moderatorRegisterForm.hidden = registered;
+  moderatorPanel.hidden = false;
+  if (registered) {
+    const name = sharedState.moderator.name ? `「${sharedState.moderator.name}」` : "";
+    moderatorState.textContent = `モデレータ${name}として登録済みです。承認・却下ができます。`;
+  } else {
+    moderatorState.textContent =
+      "未登録です。オーナーから伝えられたパスワードで登録すると、承認・却下ができるようになります。";
+  }
+  renderSharedPending();
+}
+
+function renderSharedPending() {
+  sharedPendingBody.replaceChildren();
+
+  if (!sharedState.moderator.registered) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 7;
+    cell.textContent = "モデレータ登録をすると、承認待ちの一覧と承認・却下ができます";
+    row.append(cell);
+    sharedPendingBody.append(row);
+    return;
+  }
+
+  if (sharedState.pending.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 7;
+    cell.textContent = "承認待ちはありません。「一覧を更新」で取得できます";
+    row.append(cell);
+    sharedPendingBody.append(row);
+    return;
+  }
+
+  for (const submission of sharedState.pending) {
+    const row = document.createElement("tr");
+    const actionsCell = document.createElement("td");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+
+    const approveButton = document.createElement("button");
+    approveButton.type = "button";
+    approveButton.textContent = "承認";
+    approveButton.dataset.pendingReview = submission.word;
+    approveButton.disabled = state.requestLocked;
+    approveButton.addEventListener("click", () =>
+      reviewPendingSubmission(submission.word, "approve")
+    );
+
+    const rejectButton = document.createElement("button");
+    rejectButton.type = "button";
+    rejectButton.className = "danger-button";
+    rejectButton.textContent = "却下";
+    rejectButton.dataset.pendingReview = submission.word;
+    rejectButton.disabled = state.requestLocked;
+    rejectButton.addEventListener("click", () =>
+      reviewPendingSubmission(submission.word, "reject")
+    );
+
+    actions.append(approveButton, rejectButton);
+    actionsCell.append(actions);
+    row.append(
+      createCell(sharedApi.submissionTypeLabel(submission.type)),
+      createCell(submission.word),
+      createCell(submission.reading || "-"),
+      createCell(submission.category || "-"),
+      createCell(submission.authorName || "-"),
+      createCell(formatDate(submission.createdAt)),
+      actionsCell
+    );
+    sharedPendingBody.append(row);
+  }
+}
+
+function renderSharedFetchState() {
+  if (!sharedState.cache) {
+    sharedFetchState.textContent = "未取得";
+    return;
+  }
+  const fetchedAt = formatDate(sharedState.cache.fetchedAt);
+  sharedFetchState.textContent =
+    `${sharedState.cache.entries.length}件 / バージョン${sharedState.cache.version} / 取得: ${fetchedAt}`;
+}
+
+function renderSharedEntries() {
+  sharedEntriesBody.replaceChildren();
+
+  if (!sharedState.cache || sharedState.cache.entries.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 7;
+    cell.textContent = sharedState.cache ? "共有辞書は空です" : "共有辞書を取得していません";
+    row.append(cell);
+    sharedEntriesBody.append(row);
+    updateSharedSelectionSummary();
+    return;
+  }
+
+  for (const entry of sharedState.cache.entries) {
+    const imported = sharedApi.isImported(entry, state.entries);
+    const row = document.createElement("tr");
+
+    const selectCell = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.sharedSelect = entry.id;
+    checkbox.checked = sharedState.selectedIds.has(entry.id);
+    checkbox.disabled = imported || state.requestLocked;
+    checkbox.setAttribute("aria-label", `${entry.word}を選択`);
+    checkbox.addEventListener("change", () => {
+      sharedState = sharedApi.toggleSelected(sharedState, entry.id, checkbox.checked);
+      updateSharedSelectionSummary();
+      updateControls();
+    });
+    selectCell.append(checkbox);
+
+    const statusCell = document.createElement("td");
+    statusCell.textContent = imported ? "取り込み済み" : "未取り込み";
+    if (imported) statusCell.className = "shared-imported";
+
+    row.append(
+      selectCell,
+      createCell(entry.word),
+      createCell(entry.reading),
+      createCell(entry.category || "-"),
+      createCell(entry.author || "-"),
+      createCell(formatDate(entry.updatedAt)),
+      statusCell
+    );
+    sharedEntriesBody.append(row);
+  }
+  updateSharedSelectionSummary();
+}
+
+function updateSharedSelectionSummary() {
+  sharedSelectionCount.textContent = `${sharedState.selectedIds.size}件選択中`;
+  const importable = sharedApi.importableIds(sharedState.cache, state.entries);
+  sharedSelectAll.checked =
+    importable.length > 0 && importable.every((id) => sharedState.selectedIds.has(id));
+  sharedSelectAll.disabled = importable.length === 0 || state.requestLocked;
+  importSharedButton.disabled = state.requestLocked || sharedState.selectedIds.size === 0;
+}
+
+function renderSharedSubmissions() {
+  sharedSubmissionsBody.replaceChildren();
+
+  if (sharedState.submissions.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 6;
+    cell.textContent = "投稿はありません";
+    row.append(cell);
+    sharedSubmissionsBody.append(row);
+    return;
+  }
+
+  for (const submission of sharedState.submissions) {
+    const row = document.createElement("tr");
+    const statusCell = document.createElement("td");
+    statusCell.textContent = sharedApi.submissionStatusLabel(submission.status);
+    statusCell.className = `shared-status-${submission.status}`;
+    row.append(
+      createCell(sharedApi.submissionTypeLabel(submission.type)),
+      createCell(submission.word),
+      createCell(submission.reading || "-"),
+      createCell(submission.category || "-"),
+      statusCell,
+      createCell(formatDate(submission.submittedAt))
+    );
+    sharedSubmissionsBody.append(row);
+  }
+}
+
+function renderSharedImportResult(result) {
+  sharedImportResult.replaceChildren();
+  if (!result) return;
+  const heading = document.createElement("p");
+  heading.textContent = "取り込み結果";
+  const summary = document.createElement("ul");
+  summary.className = "import-summary";
+  for (const [label, value] of [
+    ["追加", result.addedCount],
+    ["既存スキップ", result.skippedCount],
+    ["対象なし", result.missingCount]
+  ]) {
+    const item = document.createElement("li");
+    item.textContent = `${label}: ${value}件`;
+    summary.append(item);
+  }
+  sharedImportResult.append(heading, summary);
+  sharedImportResult.hidden = false;
+}
+
+function reportSharedError(error, fallbackMessage) {
+  console.error(error);
+  const sharedError = error?.payload?.sharedError;
+  setStatus(sharedError ? sharedApi.sharedErrorMessage(sharedError) : fallbackMessage);
+}
+
 function renderSettings() {
   if (!state.currentSettings) return;
   educationCommandEnabled.checked = state.currentSettings.educationCommandEnabled;
   forgetCommandEnabled.checked = state.currentSettings.forgetCommandEnabled;
+  sharedEducationCommandEnabled.checked = state.currentSettings.sharedEducationCommandEnabled;
+  sharedForgetCommandEnabled.checked = state.currentSettings.sharedForgetCommandEnabled;
+  sharedReviewCommandEnabled.checked = state.currentSettings.sharedReviewCommandEnabled;
   updateSettingsState();
 }
 
@@ -493,7 +934,10 @@ function createActionsCell(entry) {
 function updateCurrentSettings() {
   state = stateApi.setCurrentSettings(state, {
     educationCommandEnabled: educationCommandEnabled.checked,
-    forgetCommandEnabled: forgetCommandEnabled.checked
+    forgetCommandEnabled: forgetCommandEnabled.checked,
+    sharedEducationCommandEnabled: sharedEducationCommandEnabled.checked,
+    sharedForgetCommandEnabled: sharedForgetCommandEnabled.checked,
+    sharedReviewCommandEnabled: sharedReviewCommandEnabled.checked
   });
   updateSettingsState();
   updateControls();
@@ -513,12 +957,36 @@ function updateControls() {
   saveSettingsButton.disabled = locked || !stateApi.isSettingsDirty(state);
   educationCommandEnabled.disabled = locked;
   forgetCommandEnabled.disabled = locked;
+  sharedEducationCommandEnabled.disabled = locked;
+  sharedForgetCommandEnabled.disabled = locked;
+  sharedReviewCommandEnabled.disabled = locked;
   entryWord.disabled = locked;
   entryReading.disabled = locked;
   addEntryButton.disabled = locked;
   studyDictionaryFile.disabled = locked || !hasDictionaryBaseline;
   importStudyDictionaryButton.disabled =
     locked || !hasDictionaryBaseline || !selectedStudyDictionary?.preview.ok;
+  sharedEndpointUrl.disabled = locked;
+  saveSharedEndpointButton.disabled = locked;
+  fetchSharedButton.disabled = locked || !sharedState.settings.endpointUrl;
+  sharedSubmitWord.disabled = locked;
+  sharedSubmitReading.disabled = locked;
+  sharedSubmitCategory.disabled = locked;
+  sharedSubmitAuthor.disabled = locked;
+  sharedSubmitButton.disabled = locked;
+  refreshSubmissionsButton.disabled = locked;
+  moderatorPassword.disabled = locked;
+  moderatorName.disabled = locked;
+  registerModeratorButton.disabled = locked;
+  refreshPendingButton.disabled = locked || !sharedState.moderator.registered;
+  document.querySelectorAll("[data-pending-review]").forEach((button) => {
+    button.disabled = locked;
+  });
+  importSharedButton.disabled = locked || sharedState.selectedIds.size === 0;
+  const importableShared = new Set(sharedApi.importableIds(sharedState.cache, state.entries));
+  document.querySelectorAll("[data-shared-select]").forEach((checkbox) => {
+    checkbox.disabled = locked || !importableShared.has(checkbox.dataset.sharedSelect);
+  });
 
   document.querySelectorAll("[data-delete-entry]").forEach((button) => {
     button.disabled = locked;

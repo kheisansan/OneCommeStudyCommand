@@ -1,6 +1,40 @@
 import { parseEducationCommand } from "./commandParser";
 import { createEmptyDictionary, handleEducationCommand } from "./dictionaryService";
 import { applyDictionary, applyDictionaryWithMaskedFallback } from "./replacer";
+import {
+  importSharedEntries,
+  isValidSharedEndpointUrl,
+  sanitizeSharedAuthorName,
+  validateSharedSubmission,
+  type SharedSubmissionInput
+} from "./sharedDictionary";
+import {
+  fetchOwnSubmissions,
+  fetchPendingSubmissions,
+  fetchSharedDictionary,
+  registerSharedModerator,
+  reviewSharedSubmission,
+  submitSharedEntry
+} from "./sharedDictionaryClient";
+import {
+  clearModeratorState,
+  clearSharedCache,
+  ensureSharedToken,
+  isSharedCacheFresh,
+  loadModeratorState,
+  loadPendingSubmissions,
+  loadSharedCache,
+  loadSharedSettings,
+  loadSubmissionRecords,
+  mergeSubmissionRecords,
+  parseSharedDictionaryAction,
+  recordSubmission,
+  removePendingSubmissionByWord,
+  savePendingSubmissions,
+  saveModeratorState,
+  saveSharedCache,
+  saveSharedSettings
+} from "./sharedDictionaryService";
 import { StoreDictionaryRepository } from "./storeDictionaryRepository";
 import {
   failure as studyDictionaryImportFailure,
@@ -8,7 +42,15 @@ import {
   MAX_STUDY_DICTIONARY_BODY_LENGTH,
   STUDY_DICTIONARY_FILE_NAME
 } from "./studyDictionaryImport";
-import type { DictionaryFile, PluginSettings, StoreLike } from "./types";
+import type {
+  DictionaryFile,
+  PluginSettings,
+  SharedApproveCommand,
+  SharedForgetCommand,
+  SharedRejectCommand,
+  SharedTeachCommand,
+  StoreLike
+} from "./types";
 import { normalizeDictionaryWord } from "./wordNormalizer";
 import { IS_PRERELEASE, PLUGIN_VERSION } from "./version";
 
@@ -25,6 +67,7 @@ type CommentLike = {
     comment?: string;
     speechText?: string;
     text?: string;
+    isOwner?: boolean;
   };
   [key: string]: unknown;
 };
@@ -50,7 +93,10 @@ const PLUGIN_UID = "games.tang-chao.study-command";
 const SETTINGS_STORE_KEY = "settings";
 const DEFAULT_SETTINGS: PluginSettings = {
   educationCommandEnabled: true,
-  forgetCommandEnabled: true
+  forgetCommandEnabled: true,
+  sharedEducationCommandEnabled: true,
+  sharedForgetCommandEnabled: true,
+  sharedReviewCommandEnabled: true
 };
 
 let repository: StoreDictionaryRepository | null = null;
@@ -88,6 +134,13 @@ const plugin = {
     const command = parseEducationCommand(commandInput.text);
     if (!command) return comment;
     if (!isCommandEnabled(command.type)) return comment;
+
+    if (command.type === "sharedTeach" || command.type === "sharedForget") {
+      return handleSharedCommand(comment, command, userData);
+    }
+    if (command.type === "sharedApprove" || command.type === "sharedReject") {
+      return handleSharedReviewCommand(comment, command);
+    }
 
     const currentDictionary = ensureDictionary();
     logPrereleaseCommandDiagnostic(comment, commandInput, command, currentDictionary);
@@ -129,13 +182,14 @@ const plugin = {
     );
   },
 
-  request(req: PluginRequestLike): PluginResponseLike {
+  request(req: PluginRequestLike): PluginResponseLike | Promise<PluginResponseLike> {
     if (req.method === "GET") {
       return {
         code: 200,
         response: {
           settings,
-          dictionary: ensureDictionary()
+          dictionary: ensureDictionary(),
+          sharedDictionary: pluginStore ? buildSharedDictionaryState(pluginStore) : null
         }
       };
     }
@@ -145,6 +199,9 @@ const plugin = {
       if (bodySizeError) return bodySizeError;
 
       const requestType = getPutRequestType(req.body);
+      if (requestType === "sharedDictionary") {
+        return handleSharedDictionaryRequest(req.body);
+      }
       if (requestType === "importStudyDictionary") {
         return importStudyDictionaryEntries(req.body);
       }
@@ -266,12 +323,19 @@ function parsePriorityUpdateRequest(value: unknown): { word: string; priority: n
 
 function getPutRequestType(
   value: unknown
-): "settings" | "createEntry" | "updatePriority" | "importStudyDictionary" | "invalid" {
+):
+  | "settings"
+  | "createEntry"
+  | "updatePriority"
+  | "importStudyDictionary"
+  | "sharedDictionary"
+  | "invalid" {
   const body = parseRequestBody(value);
   if (!body || typeof body !== "object" || Array.isArray(body)) return "invalid";
 
   const candidate = body as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
+  if (keysEqual(keys, ["sharedDictionary"])) return "sharedDictionary";
   if (keysEqual(keys, ["settings"])) return "settings";
   if (keysEqual(keys, ["reading", "word"])) return "createEntry";
   if (keysEqual(keys, ["priority", "word"])) return "updatePriority";
@@ -371,16 +435,14 @@ function normalizeSettings(value: unknown): PluginSettings | null {
   if (!value || typeof value !== "object") return null;
 
   const candidate = value as Partial<PluginSettings>;
-  if (
-    candidate.educationCommandEnabled !== undefined &&
-    typeof candidate.educationCommandEnabled !== "boolean"
-  ) {
-    return null;
-  }
-  if (
-    candidate.forgetCommandEnabled !== undefined &&
-    typeof candidate.forgetCommandEnabled !== "boolean"
-  ) {
+  const flags = [
+    candidate.educationCommandEnabled,
+    candidate.forgetCommandEnabled,
+    candidate.sharedEducationCommandEnabled,
+    candidate.sharedForgetCommandEnabled,
+    candidate.sharedReviewCommandEnabled
+  ];
+  if (flags.some((flag) => flag !== undefined && typeof flag !== "boolean")) {
     return null;
   }
 
@@ -388,13 +450,24 @@ function normalizeSettings(value: unknown): PluginSettings | null {
     educationCommandEnabled:
       candidate.educationCommandEnabled ?? DEFAULT_SETTINGS.educationCommandEnabled,
     forgetCommandEnabled:
-      candidate.forgetCommandEnabled ?? DEFAULT_SETTINGS.forgetCommandEnabled
+      candidate.forgetCommandEnabled ?? DEFAULT_SETTINGS.forgetCommandEnabled,
+    sharedEducationCommandEnabled:
+      candidate.sharedEducationCommandEnabled ?? DEFAULT_SETTINGS.sharedEducationCommandEnabled,
+    sharedForgetCommandEnabled:
+      candidate.sharedForgetCommandEnabled ?? DEFAULT_SETTINGS.sharedForgetCommandEnabled,
+    sharedReviewCommandEnabled:
+      candidate.sharedReviewCommandEnabled ?? DEFAULT_SETTINGS.sharedReviewCommandEnabled
   };
 }
 
 function isCommandEnabled(commandType: string): boolean {
   if (commandType === "teach") return settings.educationCommandEnabled;
   if (commandType === "forget") return settings.forgetCommandEnabled;
+  if (commandType === "sharedTeach") return settings.sharedEducationCommandEnabled;
+  if (commandType === "sharedForget") return settings.sharedForgetCommandEnabled;
+  if (commandType === "sharedApprove" || commandType === "sharedReject") {
+    return settings.sharedReviewCommandEnabled;
+  }
   return true;
 }
 
@@ -519,6 +592,467 @@ function deleteDictionaryEntry(value: unknown): PluginResponseLike {
       dictionary
     }
   };
+}
+
+function handleSharedCommand(
+  comment: CommentLike,
+  command: SharedTeachCommand | SharedForgetCommand,
+  userData: UserDataLike
+): CommentLike | false {
+  const store = pluginStore;
+  if (!store) return comment;
+
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return setFeedbackText(comment, "共有辞書が設定されていません。");
+  }
+
+  const authorName = sanitizeSharedAuthorName(getUserName(userData));
+  const validation =
+    command.type === "sharedTeach"
+      ? validateSharedSubmission(
+          { word: command.word, reading: command.reading, authorName },
+          "add"
+        )
+      : validateSharedSubmission({ word: command.word, reading: "", authorName }, "remove");
+  if (!validation.ok) {
+    console.info(
+      `[OneCommeStudyCommand] shared command rejected locally: ${validation.errors.join(",")}`
+    );
+    return setFeedbackText(comment, "共有辞書へ申請できない内容です。");
+  }
+
+  // ローカル辞書へも同じ操作を反映する
+  const handled = handleEducationCommand(
+    ensureDictionary(),
+    command.type === "sharedTeach"
+      ? { type: "teach", word: command.word, reading: command.reading }
+      : { type: "forget", word: command.word },
+    { createdBy: getUserName(userData) }
+  );
+  dictionary = handled.dictionary;
+  repository?.save(handled.dictionary);
+  console.info(`[OneCommeStudyCommand] ${handled.result.message}`);
+
+  startSharedSubmission(store, endpointUrl, validation.submission);
+
+  const sharedNote =
+    command.type === "sharedTeach"
+      ? "共有辞書へも申請しました。"
+      : "共有辞書からの削除も申請しました。";
+  const speech = handled.result.speechText
+    ? `${handled.result.speechText} ${sharedNote}`
+    : `${validation.submission.word} の削除を共有辞書へ申請しました。`;
+  return setFeedbackText(comment, speech);
+}
+
+function startSharedSubmission(
+  store: StoreLike,
+  endpointUrl: string,
+  submission: SharedSubmissionInput
+): void {
+  const token = ensureSharedToken(store);
+  // 読み上げを止めないため結果を待たない。結果は投稿状況の更新で確認できる
+  submitSharedEntry(endpointUrl, submission, token)
+    .then((outcome) => {
+      if (outcome.ok) {
+        recordSubmission(store, {
+          submissionId: outcome.submissionId,
+          type: submission.type,
+          word: submission.word,
+          reading: submission.reading,
+          category: submission.category,
+          status: "pending",
+          submittedAt: new Date().toISOString()
+        });
+        console.info(
+          `[OneCommeStudyCommand] shared submission accepted: ${submission.type} ${submission.word}`
+        );
+      } else {
+        console.warn(
+          `[OneCommeStudyCommand] shared submission rejected: ${outcome.code} ${outcome.serverCode ?? ""}`
+        );
+      }
+    })
+    .catch((error) => {
+      console.warn("[OneCommeStudyCommand] shared submission failed", error);
+    });
+}
+
+function handleSharedReviewCommand(
+  comment: CommentLike,
+  command: SharedApproveCommand | SharedRejectCommand
+): CommentLike | false {
+  const store = pluginStore;
+  if (!store) return comment;
+
+  // 承認・却下は配信者本人のコメントに限定する
+  if (comment.data?.isOwner !== true) {
+    console.info("[OneCommeStudyCommand] shared review command ignored: not channel owner");
+    return comment;
+  }
+
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return setFeedbackText(comment, "共有辞書が設定されていません。");
+  }
+  if (!loadModeratorState(store).registered) {
+    return setFeedbackText(comment, "モデレーター登録がされていません。");
+  }
+
+  const word = normalizeDictionaryWord(command.word);
+  if (!word) {
+    return setFeedbackText(comment, "対象の単語が空です。");
+  }
+
+  const decision = command.type === "sharedApprove" ? "approve" : "reject";
+  startSharedReview(store, endpointUrl, word, decision);
+
+  const decisionLabel = decision === "approve" ? "承認" : "却下";
+  return setFeedbackText(comment, `${word} の${decisionLabel}を送信しました。`);
+}
+
+function startSharedReview(
+  store: StoreLike,
+  endpointUrl: string,
+  word: string,
+  decision: "approve" | "reject"
+): void {
+  const token = ensureSharedToken(store);
+  reviewSharedSubmission(endpointUrl, word, decision, token)
+    .then((outcome) => {
+      if (outcome.ok) {
+        removePendingSubmissionByWord(store, word, normalizeDictionaryWord);
+        console.info(`[OneCommeStudyCommand] shared review done: ${decision} ${word}`);
+      } else {
+        console.warn(
+          `[OneCommeStudyCommand] shared review rejected: ${outcome.code} ${outcome.serverCode ?? ""}`
+        );
+      }
+    })
+    .catch((error) => {
+      console.warn("[OneCommeStudyCommand] shared review failed", error);
+    });
+}
+
+function buildSharedDictionaryState(store: StoreLike) {
+  return {
+    settings: loadSharedSettings(store),
+    cache: loadSharedCache(store),
+    submissions: loadSubmissionRecords(store),
+    moderator: loadModeratorState(store),
+    pending: loadPendingSubmissions(store)
+  };
+}
+
+function sharedSuccessResponse(
+  store: StoreLike,
+  extra: Record<string, unknown> = {}
+): PluginResponseLike {
+  return {
+    code: 200,
+    response: {
+      settings,
+      dictionary: ensureDictionary(),
+      sharedDictionary: buildSharedDictionaryState(store),
+      ...extra
+    }
+  };
+}
+
+function sharedErrorResponse(
+  store: StoreLike,
+  code: number,
+  message: string,
+  sharedError: Record<string, unknown> = {}
+): PluginResponseLike {
+  return {
+    code,
+    response: {
+      message,
+      sharedError,
+      settings,
+      dictionary: ensureDictionary(),
+      sharedDictionary: buildSharedDictionaryState(store)
+    }
+  };
+}
+
+async function handleSharedDictionaryRequest(value: unknown): Promise<PluginResponseLike> {
+  const store = pluginStore;
+  if (!store) {
+    return { code: 500, response: { message: "Plugin store is not ready" } };
+  }
+
+  const body = parseRequestBody(value) as { sharedDictionary?: unknown } | null;
+  const action = parseSharedDictionaryAction(body?.sharedDictionary);
+  if (!action) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary request", {
+      code: "INVALID_ACTION"
+    });
+  }
+
+  switch (action.action) {
+    case "configure":
+      return configureSharedDictionary(store, action.endpointUrl);
+    case "fetch":
+      return fetchSharedDictionaryEntries(store, action.force);
+    case "submit":
+      return submitSharedDictionaryEntry(store, action);
+    case "refreshSubmissions":
+      return refreshSharedSubmissions(store);
+    case "import":
+      return importSharedDictionaryEntries(store, action.ids);
+    case "registerModerator":
+      return registerSharedModeratorRequest(store, action.password, action.name);
+    case "refreshPending":
+      return refreshSharedPending(store);
+    case "review":
+      return reviewSharedSubmissionRequest(store, action.word, action.decision);
+  }
+}
+
+function configureSharedDictionary(
+  store: StoreLike,
+  endpointUrl: string | null
+): PluginResponseLike {
+  if (endpointUrl !== null && !isValidSharedEndpointUrl(endpointUrl)) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary endpoint", {
+      code: "INVALID_ENDPOINT"
+    });
+  }
+
+  const current = loadSharedSettings(store);
+  if (current.endpointUrl !== endpointUrl) {
+    // 接続先が変わったら、その接続先に紐づく状態をすべて破棄する
+    clearSharedCache(store);
+    clearModeratorState(store);
+    savePendingSubmissions(store, []);
+  }
+  saveSharedSettings(store, { endpointUrl });
+  return sharedSuccessResponse(store);
+}
+
+async function registerSharedModeratorRequest(
+  store: StoreLike,
+  password: string,
+  name: string
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await registerSharedModerator(endpointUrl, password, name, token);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to register shared moderator", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  saveModeratorState(store, {
+    registered: true,
+    name,
+    registeredAt: new Date().toISOString()
+  });
+  return sharedSuccessResponse(store);
+}
+
+async function refreshSharedPending(store: StoreLike): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+  if (!loadModeratorState(store).registered) {
+    return sharedErrorResponse(store, 403, "Moderator is not registered", {
+      code: "NOT_MODERATOR"
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await fetchPendingSubmissions(endpointUrl, token);
+  if (!outcome.ok) {
+    // サーバー側で失効されていた場合はローカルの登録状態も落とす
+    if (outcome.code === "SERVER_REJECTED" && outcome.serverCode === "NOT_MODERATOR") {
+      clearModeratorState(store);
+      savePendingSubmissions(store, []);
+    }
+    return sharedErrorResponse(store, 502, "Failed to fetch pending submissions", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  savePendingSubmissions(store, outcome.pending);
+  return sharedSuccessResponse(store);
+}
+
+async function reviewSharedSubmissionRequest(
+  store: StoreLike,
+  word: string,
+  decision: "approve" | "reject"
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+  if (!loadModeratorState(store).registered) {
+    return sharedErrorResponse(store, 403, "Moderator is not registered", {
+      code: "NOT_MODERATOR"
+    });
+  }
+
+  const normalizedWord = normalizeDictionaryWord(word);
+  if (!normalizedWord) {
+    return sharedErrorResponse(store, 400, "Invalid review word", {
+      code: "INVALID_ACTION"
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await reviewSharedSubmission(endpointUrl, normalizedWord, decision, token);
+  if (!outcome.ok) {
+    if (outcome.code === "SERVER_REJECTED" && outcome.serverCode === "NOT_MODERATOR") {
+      clearModeratorState(store);
+      savePendingSubmissions(store, []);
+    }
+    return sharedErrorResponse(store, 502, "Failed to review shared submission", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  removePendingSubmissionByWord(store, normalizedWord, normalizeDictionaryWord);
+  return sharedSuccessResponse(store, {
+    sharedReviewResult: { word: normalizedWord, decision }
+  });
+}
+
+async function fetchSharedDictionaryEntries(
+  store: StoreLike,
+  force: boolean
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const cache = loadSharedCache(store);
+  if (cache && !force && isSharedCacheFresh(cache)) {
+    return sharedSuccessResponse(store, { sharedFetch: { source: "cache" } });
+  }
+
+  const outcome = await fetchSharedDictionary(endpointUrl, cache?.version ?? null);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to fetch shared dictionary", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  const fetchedAt = new Date().toISOString();
+  if (outcome.payload.notModified && cache) {
+    saveSharedCache(store, { ...cache, fetchedAt });
+  } else {
+    saveSharedCache(store, {
+      version: outcome.payload.version,
+      entries: outcome.payload.entries,
+      fetchedAt
+    });
+  }
+  return sharedSuccessResponse(store, { sharedFetch: { source: "remote" } });
+}
+
+async function submitSharedDictionaryEntry(
+  store: StoreLike,
+  input: { word: string; reading: string; category: string; authorName: string }
+): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const validation = validateSharedSubmission(input);
+  if (!validation.ok) {
+    return sharedErrorResponse(store, 400, "Invalid shared dictionary submission", {
+      code: "INVALID_SUBMISSION",
+      errors: validation.errors
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await submitSharedEntry(endpointUrl, validation.submission, token);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to submit shared dictionary entry", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  recordSubmission(store, {
+    submissionId: outcome.submissionId,
+    type: validation.submission.type,
+    word: validation.submission.word,
+    reading: validation.submission.reading,
+    category: validation.submission.category,
+    status: "pending",
+    submittedAt: new Date().toISOString()
+  });
+  return sharedSuccessResponse(store, { sharedSubmissionId: outcome.submissionId });
+}
+
+async function refreshSharedSubmissions(store: StoreLike): Promise<PluginResponseLike> {
+  const endpointUrl = loadSharedSettings(store).endpointUrl;
+  if (!endpointUrl) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not configured", {
+      code: "NOT_CONFIGURED"
+    });
+  }
+
+  const token = ensureSharedToken(store);
+  const outcome = await fetchOwnSubmissions(endpointUrl, token);
+  if (!outcome.ok) {
+    return sharedErrorResponse(store, 502, "Failed to fetch shared submissions", {
+      code: outcome.code,
+      serverCode: outcome.serverCode,
+      status: outcome.status
+    });
+  }
+
+  mergeSubmissionRecords(store, outcome.submissions);
+  return sharedSuccessResponse(store);
+}
+
+function importSharedDictionaryEntries(store: StoreLike, ids: string[]): PluginResponseLike {
+  const cache = loadSharedCache(store);
+  if (!cache) {
+    return sharedErrorResponse(store, 400, "Shared dictionary is not fetched", {
+      code: "NO_CACHE"
+    });
+  }
+
+  const imported = importSharedEntries(ensureDictionary(), cache.entries, ids);
+  dictionary = imported.dictionary;
+  repository?.save(imported.dictionary);
+
+  return sharedSuccessResponse(store, { sharedImportResult: imported.result });
 }
 
 function getCommentText(comment: CommentLike): string {

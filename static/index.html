@@ -25,6 +25,18 @@
           <input id="forgetCommandEnabled" type="checkbox">
           <span>忘却コマンド</span>
         </label>
+        <label class="toggle">
+          <input id="sharedEducationCommandEnabled" type="checkbox">
+          <span>共有教育コマンド</span>
+        </label>
+        <label class="toggle">
+          <input id="sharedForgetCommandEnabled" type="checkbox">
+          <span>共有忘却コマンド</span>
+        </label>
+        <label class="toggle">
+          <input id="sharedReviewCommandEnabled" type="checkbox">
+          <span>共有承認・却下コマンド</span>
+        </label>
         <span id="settingsState" class="settings-state settings-state-saved">保存済み</span>
         <button id="saveSettingsButton" class="settings-save" type="button">保存</button>
       </section>
@@ -46,6 +58,148 @@
         <p id="importAvailability" class="import-note">現在の辞書を読み込むまで選択できません。</p>
         <div id="importPreview" class="import-result" hidden></div>
         <div id="importCompletedResult" class="import-result import-result-success" hidden></div>
+      </section>
+
+      <section class="shared-dictionary" aria-labelledby="sharedDictionaryHeading">
+        <div class="section-header">
+          <div>
+            <h2 id="sharedDictionaryHeading">共有辞書</h2>
+            <p class="section-description">共有辞書から項目を選んで取り込みます。投稿はオーナーの承認後に公開されます。</p>
+          </div>
+        </div>
+
+        <div class="shared-endpoint">
+          <label class="shared-endpoint-field">
+            <span>共有辞書URL (Google Apps ScriptのウェブアプリURL)</span>
+            <input id="sharedEndpointUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec">
+          </label>
+          <button id="saveSharedEndpointButton" type="button">保存</button>
+        </div>
+
+        <div id="sharedDictionaryBody" hidden>
+          <div class="shared-toolbar">
+            <button id="fetchSharedButton" type="button">共有辞書を更新</button>
+            <span id="sharedFetchState" class="shared-fetch-state">未取得</span>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="shared-select-col"><input id="sharedSelectAll" type="checkbox" aria-label="すべて選択"></th>
+                  <th>単語</th>
+                  <th>読み</th>
+                  <th>カテゴリ</th>
+                  <th>投稿者</th>
+                  <th>更新日時</th>
+                  <th>状態</th>
+                </tr>
+              </thead>
+              <tbody id="sharedEntriesBody">
+                <tr>
+                  <td colspan="7" class="empty">共有辞書を取得していません</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="shared-import-controls">
+            <button id="importSharedButton" type="button" disabled>選択した項目を取り込む</button>
+            <span id="sharedSelectionCount" class="entry-count">0件選択中</span>
+          </div>
+          <div id="sharedImportResult" class="import-result import-result-success" hidden></div>
+
+          <h3 class="shared-subheading">新しい変換を投稿</h3>
+          <form id="sharedSubmitForm" class="entry-form">
+            <label>
+              <span>単語</span>
+              <input id="sharedSubmitWord" name="word" type="text" required maxlength="100">
+            </label>
+            <label>
+              <span>読み</span>
+              <input id="sharedSubmitReading" name="reading" type="text" required maxlength="200">
+            </label>
+            <label>
+              <span>カテゴリ (任意)</span>
+              <input id="sharedSubmitCategory" name="category" type="text" maxlength="50">
+            </label>
+            <label>
+              <span>投稿者名 (任意)</span>
+              <input id="sharedSubmitAuthor" name="authorName" type="text" maxlength="50">
+            </label>
+            <button id="sharedSubmitButton" type="submit">投稿</button>
+          </form>
+          <p class="section-description">投稿はいったん承認待ちとなり、オーナーが承認すると共有辞書へ追加されます。</p>
+
+          <div class="shared-moderator">
+            <h3 class="shared-subheading">モデレータ</h3>
+            <p id="moderatorState" class="section-description">未登録です。オーナーから伝えられたパスワードで登録すると、承認・却下ができるようになります。</p>
+            <div id="moderatorRegisterForm" class="entry-form">
+              <label>
+                <span>パスワード</span>
+                <input id="moderatorPassword" type="password" autocomplete="off" maxlength="200">
+              </label>
+              <label>
+                <span>表示名 (任意)</span>
+                <input id="moderatorName" type="text" maxlength="50">
+              </label>
+              <button id="registerModeratorButton" type="button">モデレータ登録</button>
+            </div>
+
+            <div id="moderatorPanel" hidden>
+              <div class="section-header">
+                <h3 class="shared-subheading">承認待ちの申請</h3>
+                <button id="refreshPendingButton" type="button">一覧を更新</button>
+              </div>
+              <p class="section-description">配信中は自分のチャットから 共有承認(単語) / 共有却下(単語) でも処理できます (配信者本人のコメントのみ)。</p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>種別</th>
+                      <th>単語</th>
+                      <th>読み</th>
+                      <th>カテゴリ</th>
+                      <th>投稿者</th>
+                      <th>投稿日時</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sharedPendingBody">
+                    <tr>
+                      <td colspan="7" class="empty">承認待ちはありません</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="shared-submissions">
+            <div class="section-header">
+              <h3 class="shared-subheading">投稿状況</h3>
+              <button id="refreshSubmissionsButton" type="button">状況を更新</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>種別</th>
+                    <th>単語</th>
+                    <th>読み</th>
+                    <th>カテゴリ</th>
+                    <th>状態</th>
+                    <th>投稿日時</th>
+                  </tr>
+                </thead>
+                <tbody id="sharedSubmissionsBody">
+                  <tr>
+                    <td colspan="6" class="empty">投稿はありません</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="dictionary" aria-label="教育済み情報">
@@ -88,6 +242,7 @@
     </main>
     <script src="./study-dictionary-import.js"></script>
     <script src="./management-state.js"></script>
+    <script src="./shared-dictionary-state.js"></script>
     <script src="./script.js"></script>
   </body>
 </html>
