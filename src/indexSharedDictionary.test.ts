@@ -575,16 +575,17 @@ test("review sends the decision and removes the pending entry locally", async ()
   await withFetchStub(
     (_url, init) => {
       postedBody = JSON.parse(init?.body ?? "{}");
-      return { ok: true, word: "github", decision: "approve" };
+      return { ok: true, submissionId: "p-1", word: "github", decision: "approve" };
     },
     async () => {
       const reviewed = await sharedRequest({
         action: "review",
-        word: "GitHub",
+        submissionId: "p-1",
         decision: "approve"
       });
       assert.equal(reviewed.code, 200);
       assert.deepEqual(reviewed.response.sharedReviewResult, {
+        submissionId: "p-1",
         word: "github",
         decision: "approve"
       });
@@ -593,8 +594,29 @@ test("review sends the decision and removes the pending entry locally", async ()
   );
 
   assert.equal(postedBody!.action, "review");
-  assert.equal(postedBody!.word, "github");
+  assert.equal(postedBody!.submissionId, "p-1");
   assert.equal(postedBody!.decision, "approve");
+  plugin.destroy();
+});
+
+test("review reports NOT_FOUND for stale submission ids", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  await registerAsModerator();
+
+  await withFetchStub(
+    () => ({ ok: false, code: "NOT_FOUND" }),
+    async () => {
+      const rejected = await sharedRequest({
+        action: "review",
+        submissionId: "already-processed",
+        decision: "approve"
+      });
+      assert.equal(rejected.code, 502);
+      assert.equal(rejected.response.sharedError.serverCode, "NOT_FOUND");
+    }
+  );
   plugin.destroy();
 });
 
@@ -621,14 +643,28 @@ test("shared approve command runs only for the channel owner", async () => {
   await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
   await registerAsModerator();
 
-  let reviewPosted = false;
+  let reviewBody: Record<string, unknown> | null = null;
   await withFetchStub(
-    (_url, init) => {
+    (url, init) => {
       if (init?.body) {
-        reviewPosted = true;
-        return { ok: true, word: "github", decision: "approve" };
+        reviewBody = JSON.parse(init.body);
+        return { ok: true, submissionId: "p-9", word: "github", decision: "approve" };
       }
-      return { ok: true };
+      assert.equal(new URL(url).searchParams.get("action"), "pending");
+      return {
+        ok: true,
+        pending: [
+          {
+            submissionId: "p-9",
+            type: "add",
+            word: "GitHub",
+            reading: "ギットハブ",
+            category: "",
+            authorName: "",
+            createdAt: ""
+          }
+        ]
+      };
     },
     async () => {
       const viewerComment = {
@@ -659,7 +695,52 @@ test("shared approve command runs only for the channel owner", async () => {
     }
   );
 
-  assert.equal(reviewPosted, true);
+  assert.notEqual(reviewBody, null);
+  assert.equal(reviewBody!.action, "review");
+  assert.equal(reviewBody!.submissionId, "p-9");
+  assert.equal(reviewBody!.decision, "approve");
+  plugin.destroy();
+});
+
+test("changing the endpoint regenerates the token and clears shared state", async () => {
+  const store = new MemoryStore();
+  plugin.init({ dir: "", store });
+  await sharedRequest({ action: "configure", endpointUrl: ENDPOINT });
+  await registerAsModerator();
+
+  let firstToken = "";
+  await withFetchStub(
+    (_url, init) => {
+      firstToken = String(JSON.parse(init?.body ?? "{}").token ?? "");
+      return { ok: true, submissionId: "s-1" };
+    },
+    async () => {
+      await sharedRequest({ action: "submit", word: "GitHub", reading: "ギットハブ" });
+    }
+  );
+  assert.ok(firstToken.length > 0);
+
+  const reconfigured = await sharedRequest({
+    action: "configure",
+    endpointUrl: "https://script.google.com/macros/s/other-deploy/exec"
+  });
+  assert.equal(reconfigured.response.sharedDictionary.moderator.registered, false);
+  assert.equal(reconfigured.response.sharedDictionary.submissions.length, 0);
+  assert.equal(reconfigured.response.sharedDictionary.pending.length, 0);
+  assert.equal(reconfigured.response.sharedDictionary.cache, null);
+
+  let secondToken = "";
+  await withFetchStub(
+    (_url, init) => {
+      secondToken = String(JSON.parse(init?.body ?? "{}").token ?? "");
+      return { ok: true, submissionId: "s-2" };
+    },
+    async () => {
+      await sharedRequest({ action: "submit", word: "GitHub", reading: "ギットハブ" });
+    }
+  );
+  assert.ok(secondToken.length > 0);
+  assert.notEqual(secondToken, firstToken, "token must be regenerated per endpoint");
   plugin.destroy();
 });
 

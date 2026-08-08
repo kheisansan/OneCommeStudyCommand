@@ -32,7 +32,7 @@ export type SharedDictionaryAction =
   | { action: "import"; ids: string[] }
   | { action: "registerModerator"; password: string; name: string }
   | { action: "refreshPending" }
-  | { action: "review"; word: string; decision: SharedReviewDecision };
+  | { action: "review"; submissionId: string; decision: SharedReviewDecision };
 
 export function parseSharedDictionaryAction(value: unknown): SharedDictionaryAction | null {
   if (!value || typeof value !== "object") return null;
@@ -86,11 +86,18 @@ export function parseSharedDictionaryAction(value: unknown): SharedDictionaryAct
     case "refreshPending":
       return { action: "refreshPending" };
     case "review":
-      if (typeof candidate.word !== "string" || candidate.word.trim().length === 0) {
+      if (
+        typeof candidate.submissionId !== "string" ||
+        candidate.submissionId.trim().length === 0
+      ) {
         return null;
       }
       if (!isSharedReviewDecision(candidate.decision)) return null;
-      return { action: "review", word: candidate.word, decision: candidate.decision };
+      return {
+        action: "review",
+        submissionId: candidate.submissionId.trim(),
+        decision: candidate.decision
+      };
     default:
       return null;
   }
@@ -161,6 +168,15 @@ export function ensureSharedToken(
   return token;
 }
 
+/** 次回のensureSharedTokenで新しいトークンが生成されるようにする */
+export function clearSharedToken(store: StoreLike): void {
+  store.set(SHARED_TOKEN_STORE_KEY, null);
+}
+
+export function clearSubmissionRecords(store: StoreLike): void {
+  store.set(SHARED_SUBMISSIONS_STORE_KEY, []);
+}
+
 export function loadSubmissionRecords(store: StoreLike): SharedSubmissionRecord[] {
   const value = store.get(SHARED_SUBMISSIONS_STORE_KEY);
   if (!Array.isArray(value)) return [];
@@ -222,13 +238,9 @@ export function savePendingSubmissions(
   store.set(SHARED_PENDING_STORE_KEY, pending);
 }
 
-export function removePendingSubmissionByWord(
-  store: StoreLike,
-  normalizedWord: string,
-  normalize: (value: string) => string
-): void {
+export function removePendingSubmissionById(store: StoreLike, submissionId: string): void {
   const pending = loadPendingSubmissions(store).filter(
-    (submission) => normalize(submission.word) !== normalizedWord
+    (submission) => submission.submissionId !== submissionId
   );
   savePendingSubmissions(store, pending);
 }
