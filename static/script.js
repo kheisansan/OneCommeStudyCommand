@@ -597,7 +597,7 @@ function renderSharedDictionary() {
 function renderSharedModerator() {
   const registered = sharedState.moderator.registered;
   moderatorRegisterForm.hidden = registered;
-  moderatorPanel.hidden = !registered;
+  moderatorPanel.hidden = false;
   if (registered) {
     const name = sharedState.moderator.name ? `「${sharedState.moderator.name}」` : "";
     moderatorState.textContent = `モデレータ${name}として登録済みです。承認・却下ができます。`;
@@ -611,12 +611,23 @@ function renderSharedModerator() {
 function renderSharedPending() {
   sharedPendingBody.replaceChildren();
 
+  if (!sharedState.moderator.registered) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.className = "empty";
+    cell.colSpan = 7;
+    cell.textContent = "モデレータ登録をすると、承認待ちの一覧と承認・却下ができます";
+    row.append(cell);
+    sharedPendingBody.append(row);
+    return;
+  }
+
   if (sharedState.pending.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.className = "empty";
     cell.colSpan = 7;
-    cell.textContent = "承認待ちはありません";
+    cell.textContent = "承認待ちはありません。「一覧を更新」で取得できます";
     row.append(cell);
     sharedPendingBody.append(row);
     return;
@@ -967,7 +978,7 @@ function updateControls() {
   moderatorPassword.disabled = locked;
   moderatorName.disabled = locked;
   registerModeratorButton.disabled = locked;
-  refreshPendingButton.disabled = locked;
+  refreshPendingButton.disabled = locked || !sharedState.moderator.registered;
   document.querySelectorAll("[data-pending-review]").forEach((button) => {
     button.disabled = locked;
   });
