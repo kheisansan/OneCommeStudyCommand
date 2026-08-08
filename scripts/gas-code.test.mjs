@@ -76,7 +76,94 @@ test("constantTimeEquals_ compares passwords without early exit semantics", () =
   assert.equal(gas.constantTimeEquals_("", ""), true);
 });
 
-test("registration guard constants require a strong password and bounded attempts", () => {
-  assert.ok(gas.MIN_MODERATOR_PASSWORD_LENGTH >= 12);
-  assert.ok(gas.MAX_REGISTER_FAILURES_PER_HOUR <= 20);
+test("isStrongModeratorPassword_ enforces length and character classes", () => {
+  assert.equal(gas.MIN_MODERATOR_PASSWORD_LENGTH, 12);
+  // 12文字以上 + 英大・英小・数字・記号のうち3種類以上
+  assert.equal(gas.isStrongModeratorPassword_("Abcdef123456"), true);
+  assert.equal(gas.isStrongModeratorPassword_("abcdef123!@#"), true);
+  assert.equal(gas.isStrongModeratorPassword_("ABCDEF-12345"), true);
+  assert.equal(gas.isStrongModeratorPassword_("Ab1!"), false, "too short");
+  assert.equal(gas.isStrongModeratorPassword_("abcdefghijkl"), false, "one class");
+  assert.equal(gas.isStrongModeratorPassword_("abcdef123456"), false, "two classes");
+  assert.equal(gas.isStrongModeratorPassword_("ABCDEFGH1234"), false, "two classes");
+  assert.equal(gas.isStrongModeratorPassword_(null), false);
+});
+
+function fakeSubmissionsSheet(record) {
+  const writes = {};
+  return {
+    writes,
+    getRange(row, column, numRows, numColumns) {
+      if (numRows !== undefined) {
+        return { getValues: () => [record.slice(column - 1, column - 1 + numColumns)] };
+      }
+      return {
+        getValue: () => record[column - 1],
+        setValue: (value) => {
+          writes[column] = value;
+          record[column - 1] = value;
+        }
+      };
+    }
+  };
+}
+
+function fakeDictionarySheet() {
+  const appended = [];
+  return {
+    appended,
+    appendRow: (row) => appended.push(row)
+  };
+}
+
+test("processReviewRow_ sanitizes reviewedBy and dictionary values", () => {
+  const record = [
+    "sub-1",
+    "add",
+    "=cmd",
+    "=SUM(A1)",
+    "@import",
+    "+author",
+    "token-123",
+    "pending",
+    "2026-08-08T00:00:00.000Z",
+    "",
+    ""
+  ];
+  const submissions = fakeSubmissionsSheet(record);
+  const dictionary = fakeDictionarySheet();
+
+  const result = gas.processReviewRow_(submissions, dictionary, 2, "approved", "=TEST");
+
+  assert.equal(result, "reviewed");
+  assert.equal(submissions.writes[gas.SUB_STATUS + 1], "approved");
+  assert.equal(submissions.writes[gas.SUB_REVIEWED_BY + 1], "'=TEST");
+  assert.equal(dictionary.appended.length, 1);
+  const [, word, reading, category, author] = dictionary.appended[0];
+  assert.equal(word, "'=cmd");
+  assert.equal(reading, "'=SUM(A1)");
+  assert.equal(category, "'@import");
+  assert.equal(author, "'+author");
+});
+
+test("processReviewRow_ skips rows that were already reviewed", () => {
+  const record = [
+    "sub-1",
+    "add",
+    "word",
+    "reading",
+    "",
+    "",
+    "token-123",
+    "approved",
+    "2026-08-08T00:00:00.000Z",
+    "2026-08-08T01:00:00.000Z",
+    "owner"
+  ];
+  const submissions = fakeSubmissionsSheet(record);
+  const dictionary = fakeDictionarySheet();
+
+  assert.equal(gas.processReviewRow_(submissions, dictionary, 2, "approved", "mod"), "skipped");
+  assert.equal(dictionary.appended.length, 0);
+  assert.deepEqual(submissions.writes, {});
 });

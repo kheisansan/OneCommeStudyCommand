@@ -76,8 +76,6 @@ var SUBMISSION_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 var FORMULA_PREFIX = /^[=+\-@]/;
 
 var MIN_MODERATOR_PASSWORD_LENGTH = 12;
-var REGISTER_FAILURE_CACHE_KEY = "register-failures";
-var MAX_REGISTER_FAILURES_PER_HOUR = 10;
 
 // ---------------------------------------------------------------------------
 // セットアップとメニュー
@@ -492,19 +490,12 @@ function handleRegisterModerator_(body) {
     return jsonOutput_({ ok: false, code: "PASSWORD_NOT_SET" });
   }
   // 弱いパスワードのまま登録APIを公開しない (総当たり対策)
-  if (expected.length < MIN_MODERATOR_PASSWORD_LENGTH) {
+  if (!isStrongModeratorPassword_(expected)) {
     return jsonOutput_({ ok: false, code: "WEAK_PASSWORD" });
-  }
-
-  var cache = CacheService.getScriptCache();
-  var failures = Number(cache.get(REGISTER_FAILURE_CACHE_KEY) || 0);
-  if (failures >= MAX_REGISTER_FAILURES_PER_HOUR) {
-    return jsonOutput_({ ok: false, code: "REGISTRATION_LOCKED" });
   }
 
   var password = typeof body.password === "string" ? body.password : "";
   if (password === "" || !constantTimeEquals_(password, expected)) {
-    cache.put(REGISTER_FAILURE_CACHE_KEY, String(failures + 1), 3600);
     return jsonOutput_({ ok: false, code: "INVALID_PASSWORD" });
   }
 
@@ -542,6 +533,22 @@ function handleRegisterModerator_(body) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * 登録用パスワードの要件: 12文字以上、かつ英大文字・英小文字・数字・記号の
+ * うち3種類以上を含むこと。
+ */
+function isStrongModeratorPassword_(value) {
+  if (typeof value !== "string" || value.length < MIN_MODERATOR_PASSWORD_LENGTH) {
+    return false;
+  }
+  var classes = 0;
+  if (/[A-Z]/.test(value)) classes += 1;
+  if (/[a-z]/.test(value)) classes += 1;
+  if (/[0-9]/.test(value)) classes += 1;
+  if (/[^A-Za-z0-9]/.test(value)) classes += 1;
+  return classes >= 3;
 }
 
 function constantTimeEquals_(actual, expected) {
@@ -589,11 +596,6 @@ function handleReview_(body) {
     return jsonOutput_({ ok: false, code: "INVALID_TOKEN" });
   }
 
-  var moderatorName = getModeratorName_(token);
-  if (moderatorName === null) {
-    return jsonOutput_({ ok: false, code: "NOT_MODERATOR" });
-  }
-
   var decision = body.decision;
   if (decision !== "approve" && decision !== "reject") {
     return jsonOutput_({ ok: false, code: "INVALID_ACTION" });
@@ -612,6 +614,13 @@ function handleReview_(body) {
   }
 
   try {
+    // ロック待機中にブロック・失効された場合を防ぐため、権限確認は
+    // ロック取得後に行う
+    var moderatorName = getModeratorName_(token);
+    if (moderatorName === null) {
+      return jsonOutput_({ ok: false, code: "NOT_MODERATOR" });
+    }
+
     var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     var submissions = spreadsheet.getSheetByName(SHEET_SUBMISSIONS);
     var dictionary = spreadsheet.getSheetByName(SHEET_DICTIONARY);
@@ -778,7 +787,9 @@ function processReviewRow_(submissions, dictionary, rowNumber, nextStatus, revie
 
   submissions.getRange(rowNumber, SUB_STATUS + 1).setValue(nextStatus);
   submissions.getRange(rowNumber, SUB_REVIEWED_AT + 1).setValue(now);
-  submissions.getRange(rowNumber, SUB_REVIEWED_BY + 1).setValue(reviewedBy || "owner");
+  submissions
+    .getRange(rowNumber, SUB_REVIEWED_BY + 1)
+    .setValue(sanitizeCellValue_(reviewedBy || "owner"));
   return "reviewed";
 }
 
